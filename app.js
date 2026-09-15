@@ -30,8 +30,8 @@ const MEAL_TYPES = [
   { id: "extra", label: "Extra", icon: "➕" },
 ];
 const TZ = "America/Argentina/Buenos_Aires";
-const GEMINI_MODEL = "gemini-3.8-flash"; // si Google lo deprecó, cambiar acá (ver ai.google.dev/gemini-api/docs/models)
-const GEMINI_FALLBACK_MODEL = "gemini-3.1-flash-lite"; // más liviano: se usa si el principal está saturado (error 503)
+const GEMINI_MODEL = "gemini-3.1-flash-lite";
+const GEMINI_FALLBACK_MODEL = "gemini-2.5-flash"; // segundo intento si el liviano también falla
 
 // ---------- estado ----------
 let currentUser = null;
