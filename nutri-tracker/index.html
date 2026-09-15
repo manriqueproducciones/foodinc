@@ -119,23 +119,8 @@
 
         <div class="field">
           <label for="entry-desc">Descripción</label>
-          <input type="text" id="entry-desc" placeholder="Ej: milanesa de pollo al horno con ensalada" autocomplete="off">
-        </div>
-
-        <div class="field">
-          <label>Opciones rápidas <span style="text-transform:none;font-weight:400;">— del plan, según el tipo de comida elegido arriba</span></label>
-          <div class="quick-options" id="quick-options"></div>
-          <div class="qo-add-row" id="qo-add-row">
-            <button type="button" class="photo-btn" id="qo-add-btn">+ Agregar una opción mía a la lista</button>
-          </div>
-          <div class="qo-add-form" id="qo-add-form" hidden>
-            <input type="text" id="qo-new-texto" placeholder="Ej: Tarta de zapallitos casera">
-            <input type="number" id="qo-new-kcal" placeholder="kcal aprox." min="0" step="5">
-            <div style="display:flex; gap:8px;">
-              <button type="button" class="primary-btn" id="qo-save-btn" style="flex:1; padding:10px;">Guardar en mi lista</button>
-              <button type="button" class="ghost-btn" id="qo-cancel-btn">Cancelar</button>
-            </div>
-          </div>
+          <input type="text" id="entry-desc" list="opciones-datalist" placeholder="Ej: milanesa de pollo al horno con ensalada" autocomplete="off">
+          <datalist id="opciones-datalist"></datalist>
         </div>
 
         <div class="field">

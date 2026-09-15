@@ -77,31 +77,3 @@ export function todasLasOpciones() {
     ...OPCIONES_COLACION,
   ];
 }
-
-// Qué categoría de opciones rápidas mostrar según el tipo de comida elegido.
-// Desayuno y merienda comparten lista (así están en el plan de la
-// nutricionista), igual que almuerzo y cena. "extra" no tiene categoría
-// propia (null) — en ese caso se muestran todas mezcladas.
-export const CATEGORY_BY_MEAL = {
-  desayuno: "desayuno_merienda",
-  merienda: "desayuno_merienda",
-  almuerzo: "almuerzo_cena",
-  cena: "almuerzo_cena",
-  colacion: "colacion",
-  extra: null,
-};
-
-// Categoría a usar cuando el usuario guarda una opción propia mientras
-// tiene seleccionado "extra" (no existe la categoría null como tal).
-export function categoriaParaGuardar(mealType) {
-  return CATEGORY_BY_MEAL[mealType] || "extra";
-}
-
-// Lista base (las que vienen del plan) para una categoría dada. category
-// === null (equivalente a "extra") devuelve todas mezcladas.
-export function opcionesBaseParaCategoria(category) {
-  if (category === "desayuno_merienda") return OPCIONES_DESAYUNO_MERIENDA;
-  if (category === "almuerzo_cena") return OPCIONES_ALMUERZO_CENA;
-  if (category === "colacion") return OPCIONES_COLACION;
-  return todasLasOpciones();
-}

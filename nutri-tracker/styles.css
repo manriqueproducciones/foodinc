@@ -228,25 +228,6 @@ nav.bottom-nav button.active { color: var(--green-deep); background: var(--surfa
 .ai-btn[disabled] { opacity: 0.55; }
 .ai-note { font-size: 0.76rem; color: var(--ink-faint); }
 
-.quick-options { display: flex; flex-wrap: wrap; gap: 7px; }
-.qo-chip {
-  display: inline-flex; align-items: center; gap: 6px; border: 1px solid var(--border); background: var(--surface);
-  color: var(--ink); border-radius: 999px; padding: 7px 10px 7px 12px; font-size: 0.82rem; cursor: pointer;
-  max-width: 100%;
-}
-.qo-chip:active { background: var(--surface-alt); }
-.qo-chip .qo-kcal { color: var(--terracota); font-weight: 600; font-size: 0.78rem; white-space: nowrap; }
-.qo-chip .qo-del {
-  color: var(--ink-faint); font-weight: 700; padding: 0 2px 0 4px; border-radius: 50%; line-height: 1;
-}
-.qo-chip .qo-del:hover { color: var(--danger); }
-.qo-chip-add { border-style: dashed; color: var(--ink-soft); background: var(--surface-alt); }
-.qo-add-row { margin-top: 2px; }
-.qo-add-form { display: flex; flex-direction: column; gap: 8px; background: var(--surface-alt); border: 1px solid var(--border); border-radius: 10px; padding: 12px; margin-top: 4px; }
-.qo-add-form input {
-  background: var(--surface); border: 1px solid var(--border); border-radius: 9px; padding: 9px 10px; color: var(--ink); width: 100%;
-}
-
 .checkbox-row { display: flex; gap: 8px; flex-wrap: wrap; }
 .checkbox-row label {
   display: flex; align-items: center; gap: 6px; font-size: 0.83rem; color: var(--ink-soft);

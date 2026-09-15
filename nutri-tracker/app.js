@@ -12,7 +12,7 @@ import {
 } from "https://www.gstatic.com/firebasejs/10.7.0/firebase-firestore.js";
 
 import { firebaseConfig } from "./firebase-config.js";
-import { OBJETIVO_KCAL, CATEGORY_BY_MEAL, categoriaParaGuardar, opcionesBaseParaCategoria } from "./data/opciones.js";
+import { OBJETIVO_KCAL, todasLasOpciones } from "./data/opciones.js";
 
 // ---------- Firebase ----------
 const fbApp = initializeApp(firebaseConfig);
@@ -30,11 +30,8 @@ const MEAL_TYPES = [
   { id: "extra", label: "Extra", icon: "➕" },
 ];
 const TZ = "America/Argentina/Buenos_Aires";
-// gemini-2.5-flash-lite dejó de estar disponible para cuentas nuevas (la propia
-// API de Google devuelve un 404 recomendando pasar a gemini-3.5-flash-lite).
-// Usamos ese como principal y gemini-3.1-flash-lite como respaldo si se satura.
-const GEMINI_MODEL = "gemini-3.5-flash-lite";
-const GEMINI_FALLBACK_MODEL = "gemini-3.1-flash-lite"; // segundo intento si el principal se satura
+const GEMINI_MODEL = "gemini-3.8-flash"; // si Google lo deprecó, cambiar acá (ver ai.google.dev/gemini-api/docs/models)
+const GEMINI_FALLBACK_MODEL = "gemini-3.1-flash-lite"; // más liviano: se usa si el principal está saturado (error 503)
 
 // ---------- estado ----------
 let currentUser = null;
@@ -49,8 +46,6 @@ let editingEntryId = null;
 let pendingPhoto = null; // { fullBase64, fullMime, thumbBase64 }
 let historyUnsub = null;
 let historyRangeDays = 90; // 0 = todo
-let customOptions = []; // opciones propias del usuario (Firestore: users/{uid}/menuOptions)
-let customOptionsUnsub = null;
 
 // ---------- helpers de fecha ----------
 function todayISO(d = new Date()) {
@@ -112,7 +107,6 @@ onAuthStateChanged(auth, async (user) => {
     appShell.hidden = false;
     await loadSettings();
     watchDate(selectedDate);
-    watchCustomOptions();
     render();
   } else {
     viewLogin.hidden = false;
@@ -120,20 +114,8 @@ onAuthStateChanged(auth, async (user) => {
     if (entriesUnsub) entriesUnsub();
     if (dayDocUnsub) dayDocUnsub();
     if (historyUnsub) historyUnsub();
-    if (customOptionsUnsub) customOptionsUnsub();
-    customOptions = [];
   }
 });
-
-// ---------- opciones propias (Firestore: users/{uid}/menuOptions) ----------
-function watchCustomOptions() {
-  if (customOptionsUnsub) customOptionsUnsub();
-  const ref = collection(db, "users", currentUser.uid, "menuOptions");
-  customOptionsUnsub = onSnapshot(ref, (snap) => {
-    customOptions = snap.docs.map((d) => ({ id: d.id, ...d.data() }));
-    renderQuickOptions();
-  }, (err) => toast("Error leyendo tus opciones: " + err.message, true));
-}
 
 // ---------- settings ----------
 async function loadSettings() {
@@ -411,7 +393,6 @@ function openSheet(entry) {
 
   $("#sheet-title").textContent = entry ? "Editar comida" : "Agregar comida";
   setMealType(entry?.mealType || guessMealType());
-  renderQuickOptions();
   $("#entry-desc").value = entry?.description || "";
   $("#entry-weight").value = entry?.weightGrams || "";
   $("#entry-kcal").value = entry?.kcal ?? "";
@@ -449,89 +430,15 @@ function setMealType(id) {
 }
 mealSeg.addEventListener("click", (e) => {
   const btn = e.target.closest("button[data-meal]");
-  if (btn) { setMealType(btn.dataset.meal); renderQuickOptions(); }
+  if (btn) setMealType(btn.dataset.meal);
 });
 
-// ---------- opciones rápidas (chips) ----------
-const quickOptionsEl = $("#quick-options");
-const qoAddRow = $("#qo-add-row");
-const qoAddForm = $("#qo-add-form");
-const qoNewTexto = $("#qo-new-texto");
-const qoNewKcal = $("#qo-new-kcal");
-
-function currentMealType() {
-  return mealSeg.querySelector("button.active")?.dataset.meal;
-}
-
-function renderQuickOptions() {
-  const mealType = currentMealType();
-  const category = CATEGORY_BY_MEAL[mealType] ?? null; // null = "extra": mezcla todo
-  const base = opcionesBaseParaCategoria(category).map((o) => ({ texto: o.texto, kcal: o.kcal, custom: false }));
-  const propias = customOptions
-    .filter((o) => category === null || o.category === category)
-    .map((o) => ({ id: o.id, texto: o.texto, kcal: o.kcal, custom: true }));
-  const todas = [...base, ...propias];
-
-  if (todas.length === 0) {
-    quickOptionsEl.innerHTML = `<span style="color:var(--ink-faint); font-size:0.82rem;">Todavía no hay opciones guardadas para "extra" — agregá la tuya abajo.</span>`;
-  } else {
-    quickOptionsEl.innerHTML = todas.map((o) => `
-      <button type="button" class="qo-chip" data-texto="${escapeHTML(o.texto)}" data-kcal="${o.kcal}">
-        ${escapeHTML(o.texto)} <span class="qo-kcal num">${o.kcal}</span>${o.custom ? `<span class="qo-del" data-del-id="${o.id}" title="Borrar de mi lista">✕</span>` : ""}
-      </button>
-    `).join("");
-  }
-
-  quickOptionsEl.querySelectorAll(".qo-chip[data-texto]").forEach((chip) => {
-    chip.addEventListener("click", (e) => {
-      if (e.target.closest(".qo-del")) return;
-      $("#entry-desc").value = chip.dataset.texto;
-      $("#entry-kcal").value = chip.dataset.kcal;
-      delete $("#entry-desc").dataset.aiSource;
-    });
-  });
-  quickOptionsEl.querySelectorAll(".qo-del").forEach((delBtn) => {
-    delBtn.addEventListener("click", async (e) => {
-      e.stopPropagation();
-      if (!confirm("¿Borrar esta opción de tu lista?")) return;
-      await deleteDoc(doc(db, "users", currentUser.uid, "menuOptions", delBtn.dataset.delId));
-    });
-  });
-}
-
-qoAddRow.addEventListener("click", (e) => {
-  if (!e.target.closest("#qo-add-btn")) return;
-  qoAddRow.hidden = true;
-  qoAddForm.hidden = false;
-  qoNewTexto.focus();
-});
-$("#qo-cancel-btn").addEventListener("click", () => {
-  qoAddForm.hidden = true;
-  qoAddRow.hidden = false;
-  qoNewTexto.value = "";
-  qoNewKcal.value = "";
-});
-$("#qo-save-btn").addEventListener("click", async () => {
-  const texto = qoNewTexto.value.trim();
-  const kcal = Number(qoNewKcal.value);
-  if (!texto) { toast("Escribí una descripción para guardar", true); return; }
-  if (!qoNewKcal.value || Number.isNaN(kcal)) { toast("Poné las kcal aproximadas", true); return; }
-  const category = categoriaParaGuardar(currentMealType());
-  try {
-    const newRef = doc(collection(db, "users", currentUser.uid, "menuOptions"));
-    await setDoc(newRef, { texto, kcal, category, createdAt: serverTimestamp() });
-    // la usamos de una vez en la comida que se está cargando
-    $("#entry-desc").value = texto;
-    $("#entry-kcal").value = kcal;
-    delete $("#entry-desc").dataset.aiSource;
-    qoNewTexto.value = "";
-    qoNewKcal.value = "";
-    qoAddForm.hidden = true;
-    qoAddRow.hidden = false;
-    toast("Agregada a tu lista");
-  } catch (err) {
-    toast("No se pudo guardar: " + err.message, true);
-  }
+// autocompletado de descripción
+const datalist = document.getElementById("opciones-datalist");
+datalist.innerHTML = todasLasOpciones().map((o) => `<option value="${escapeHTML(o.texto)}">`).join("");
+$("#entry-desc").addEventListener("input", (e) => {
+  const match = todasLasOpciones().find((o) => o.texto === e.target.value);
+  if (match && !$("#entry-kcal").value) $("#entry-kcal").value = match.kcal;
 });
 
 // foto (siempre opcional — se puede guardar y analizar sin ella)
