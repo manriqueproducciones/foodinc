@@ -1,15 +1,13 @@
-// 1. Renombrá este archivo a "firebase-config.js" (sacá el .sample).
-// 2. Pegá acá las claves que te da Firebase cuando creás tu proyecto web
-//    (Firebase Console → ⚙️ Configuración del proyecto → tus apps → SDK setup and configuration).
-// 3. Estas claves NO son secretas: identifican tu proyecto, no dan acceso
+// 1. Este archivo se llama "firebase-config.js" (sin el .sample).
+// 2. Estas claves NO son secretas: identifican tu proyecto, no dan acceso
 //    a nadie por sí solas. La seguridad real la ponen las reglas de
-//    Firestore (firestore.rules), que solo dejan a cada usuario leer y
-//    escribir sus propios datos. Por eso este archivo SÍ se sube a GitHub.
+//    Firestore, que solo dejan a cada usuario leer y escribir sus propios
+//    datos. Por eso este archivo SÍ se sube a GitHub.
 export const firebaseConfig = {
-  apiKey: "TU_API_KEY",
-  authDomain: "TU-PROYECTO.firebaseapp.com",
-  projectId: "TU-PROYECTO",
-  storageBucket: "TU-PROYECTO.appspot.com",
-  messagingSenderId: "000000000000",
-  appId: "1:000000000000:web:xxxxxxxxxxxxxxxxxx",
+  apiKey: "AIzaSyBw68ydmf2svZZowRRXOQL6v8lURTTifYE",
+  authDomain: "alimentacion-fb8a8.firebaseapp.com",
+  projectId: "alimentacion-fb8a8",
+  storageBucket: "alimentacion-fb8a8.firebasestorage.app",
+  messagingSenderId: "827657827328",
+  appId: "1:827657827328:web:57b2fdf3111788d154d4e5",
 };
