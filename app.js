@@ -30,8 +30,8 @@ const MEAL_TYPES = [
   { id: "extra", label: "Extra", icon: "➕" },
 ];
 const TZ = "America/Argentina/Buenos_Aires";
-const GEMINI_MODEL = "gemini-2.5-flash-lite";
-const GEMINI_FALLBACK_MODEL = "gemini-2.5-flash";
+const GEMINI_MODEL = "gemini-3.5-flash-lite";
+const GEMINI_FALLBACK_MODEL = "gemini-3.1-flash-lite";
 
 // ---------- estado ----------
 let currentUser = null;
