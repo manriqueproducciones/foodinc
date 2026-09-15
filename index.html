@@ -1,0 +1,169 @@
+<!doctype html>
+<html lang="es">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover" />
+  <meta name="theme-color" content="#34432E" />
+  <title>Cuaderno Nutricional</title>
+  <link rel="manifest" href="manifest.json" />
+  <link rel="apple-touch-icon" href="icons/apple-touch-icon.png" />
+  <link rel="icon" href="icons/icon-192.png" />
+  <link rel="stylesheet" href="styles.css" />
+</head>
+<body>
+
+  <!-- ---------- login ---------- -->
+  <section id="view-login" class="login-screen">
+    <div class="brand">🥗</div>
+    <h1>Cuaderno Nutricional</h1>
+    <p>Anotá lo que vas comiendo día a día — desayuno, almuerzo, merienda, cena, colaciones y extras — con foto y estimación automática de calorías, y compará contra tu plan.</p>
+    <button id="google-signin-btn" class="google-btn">
+      <svg width="18" height="18" viewBox="0 0 18 18"><path fill="#4285F4" d="M17.64 9.2c0-.64-.06-1.25-.16-1.84H9v3.48h4.84a4.14 4.14 0 0 1-1.8 2.72v2.26h2.9c1.7-1.57 2.7-3.88 2.7-6.62z"/><path fill="#34A853" d="M9 18c2.43 0 4.47-.8 5.96-2.18l-2.9-2.26c-.8.54-1.84.86-3.06.86-2.35 0-4.34-1.59-5.05-3.72H.96v2.33A9 9 0 0 0 9 18z"/><path fill="#FBBC05" d="M3.95 10.7A5.4 5.4 0 0 1 3.67 9c0-.59.1-1.17.28-1.7V4.97H.96A9 9 0 0 0 0 9c0 1.45.35 2.83.96 4.03l2.99-2.33z"/><path fill="#EA4335" d="M9 3.58c1.32 0 2.5.45 3.44 1.35l2.58-2.58C13.46.89 11.43 0 9 0A9 9 0 0 0 .96 4.97l2.99 2.33C4.66 5.17 6.65 3.58 9 3.58z"/></svg>
+      Iniciar sesión con Google
+    </button>
+    <p style="font-size:0.75rem;color:var(--ink-faint);max-width:34ch;">Tus datos se guardan en tu propia cuenta — nadie más puede verlos.</p>
+  </section>
+
+  <!-- ---------- app ---------- -->
+  <div id="app-shell" hidden>
+    <div id="app">
+
+      <header class="topbar">
+        <div>
+          <div class="eyebrow">Cuaderno Nutricional</div>
+          <h1>Jon</h1>
+        </div>
+        <button id="signout-btn" class="icon-btn" title="Cerrar sesión">⎋</button>
+      </header>
+
+      <main>
+
+        <!-- ---------- vista: hoy ---------- -->
+        <section id="view-hoy">
+          <div class="date-switch">
+            <button id="date-prev" aria-label="Día anterior">‹</button>
+            <div class="date-label" id="date-label">Hoy</div>
+            <button id="date-next" aria-label="Día siguiente">›</button>
+          </div>
+
+          <div class="summary-card">
+            <div class="summary-top">
+              <div class="summary-kcal num" id="summary-kcal">0<small>/ 1000–1400 kcal</small></div>
+              <div class="status-pill empty" id="summary-pill">Sin registros todavía</div>
+            </div>
+            <div class="gauge"><div class="gauge-target" id="gauge-target"></div><div class="gauge-fill" id="gauge-fill" style="width:0%"></div></div>
+            <div class="checklist" id="checklist"></div>
+          </div>
+
+          <div id="entries-list"></div>
+        </section>
+
+        <!-- ---------- vista: historial ---------- -->
+        <section id="view-historial" hidden>
+          <h2 style="font-size:1.1rem;margin-bottom:2px;">Historial</h2>
+          <p style="color:var(--ink-soft);font-size:0.85rem;margin:0 0 12px;">Tocá un día para ver el detalle.</p>
+          <div class="seg" id="history-range-seg" style="margin-bottom:14px;">
+            <button type="button" data-days="30">30 días</button>
+            <button type="button" data-days="90" class="active">90 días</button>
+            <button type="button" data-days="365">1 año</button>
+            <button type="button" data-days="0">Todo</button>
+          </div>
+          <div id="history-summary" style="margin-bottom:14px;"></div>
+          <div id="history-list" style="display:flex;flex-direction:column;gap:10px;"></div>
+        </section>
+
+        <!-- ---------- vista: ajustes ---------- -->
+        <section id="view-ajustes" hidden style="display:flex;flex-direction:column;gap:14px;">
+          <form id="settings-form" class="settings-block">
+            <h3>Objetivo diario</h3>
+            <p class="hint">El rango calculado a partir del plan de la nutricionista. Ajustalo si ella te da un número distinto.</p>
+            <div class="range-row">
+              <div class="field"><label for="settings-min">Mínimo (kcal)</label><input type="number" id="settings-min" min="0" step="10"></div>
+              <div class="field"><label for="settings-max">Máximo (kcal)</label><input type="number" id="settings-max" min="0" step="10"></div>
+            </div>
+            <h3 style="margin-top:6px;">Análisis de fotos con IA</h3>
+            <p class="hint">Tu API key de Google Gemini (gratuita). Se guarda solo en tu cuenta — nunca se sube a GitHub. Sacala en <a href="https://aistudio.google.com/apikey" target="_blank" rel="noopener">aistudio.google.com/apikey</a>.</p>
+            <div class="field"><label for="settings-gemini-key">API key de Gemini</label><input type="text" id="settings-gemini-key" placeholder="AIza..." autocomplete="off"></div>
+            <button type="submit" class="primary-btn">Guardar ajustes</button>
+          </form>
+          <p style="text-align:center;font-size:0.78rem;color:var(--ink-faint);">Cuaderno Nutricional · hecho para Jon</p>
+        </section>
+
+      </main>
+
+      <button class="fab" id="fab-add" aria-label="Agregar comida">+</button>
+
+      <nav class="bottom-nav">
+        <button data-view="hoy" class="active"><span class="ic">📅</span>Hoy</button>
+        <button data-view="historial"><span class="ic">📊</span>Historial</button>
+        <button data-view="ajustes"><span class="ic">⚙️</span>Ajustes</button>
+      </nav>
+
+    </div>
+  </div>
+
+  <!-- ---------- sheet: agregar/editar comida ---------- -->
+  <div class="sheet-backdrop" id="sheet-backdrop" hidden>
+    <div class="sheet" role="dialog" aria-modal="true">
+      <div class="sheet-handle"></div>
+      <div class="sheet-head">
+        <h2 id="sheet-title">Agregar comida</h2>
+        <button class="icon-btn" id="sheet-close" aria-label="Cerrar">✕</button>
+      </div>
+
+      <form id="entry-form" style="display:flex;flex-direction:column;gap:14px;">
+        <div class="field">
+          <label>Tipo de comida</label>
+          <div class="seg" id="meal-type-seg"></div>
+        </div>
+
+        <div class="field">
+          <label for="entry-desc">Descripción</label>
+          <input type="text" id="entry-desc" list="opciones-datalist" placeholder="Ej: milanesa de pollo al horno con ensalada" autocomplete="off">
+          <datalist id="opciones-datalist"></datalist>
+        </div>
+
+        <div class="field">
+          <label>Foto del plato <span style="text-transform:none;font-weight:400;">— opcional, solo si querés que la IA te ayude a estimar</span></label>
+          <div class="photo-row" id="photo-row-empty">
+            <button type="button" class="photo-btn" id="photo-btn">📷 Agregar foto (opcional)</button>
+          </div>
+          <div class="photo-row" id="photo-row-filled" hidden>
+            <div id="photo-preview-wrap"></div>
+            <button type="button" class="photo-btn" id="photo-remove-btn" style="flex:none;">Quitar foto</button>
+          </div>
+          <input type="file" id="photo-input" accept="image/*" hidden>
+          <button type="button" class="ai-btn" id="ai-analyze-btn">🔍 Analizar con IA</button>
+          <p class="ai-note">Funciona con foto, con descripción escrita, o ambas — no hace falta sacar foto para cargar una comida. Siempre revisá el resultado antes de guardar.</p>
+        </div>
+
+        <div class="range-row">
+          <div class="field"><label for="entry-weight">Peso aprox. (g)</label><input type="number" id="entry-weight" min="0" step="10" placeholder="150"></div>
+          <div class="field"><label for="entry-kcal">Kcal</label><input type="number" id="entry-kcal" min="0" step="5" placeholder="300"></div>
+        </div>
+
+        <div class="field">
+          <label>Esta comida incluye</label>
+          <div class="checkbox-row">
+            <label><input type="checkbox" id="chk-veggies"> Verduras</label>
+            <label><input type="checkbox" id="chk-protein"> Proteína</label>
+            <label><input type="checkbox" id="chk-carb"> Carbohidrato complejo</label>
+          </div>
+        </div>
+
+        <div class="field">
+          <label for="entry-notes">Notas (opcional)</label>
+          <textarea id="entry-notes" placeholder="Cómo te sentiste, si tenías más hambre de lo normal, etc."></textarea>
+        </div>
+
+        <button type="submit" class="primary-btn">Guardar</button>
+        <button type="button" class="ghost-btn" id="delete-entry-btn" hidden>Borrar este registro</button>
+      </form>
+    </div>
+  </div>
+
+  <div class="toast" id="toast" hidden></div>
+
+  <script type="module" src="app.js"></script>
+</body>
+</html>
