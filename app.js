@@ -509,7 +509,7 @@ $("#ai-analyze-btn").addEventListener("click", async () => {
     const result = await analyzePhotoWithAI({
       base64Image: pendingPhoto?.fullBase64 || null,
       mimeType: pendingPhoto?.fullMime || null,
-      descripcion: $("#entry-desc").value,
+      descripcion: $("#entry-desc").value.trim(),
       pesoAprox: $("#entry-weight").value,
       apiKey: settings.geminiKey,
     });
@@ -526,21 +526,25 @@ $("#ai-analyze-btn").addEventListener("click", async () => {
   }
 });
 
-function buildGeminiPrompt(descripcion, pesoAprox) {
+function buildGeminiPrompt(descripcion, pesoAprox, hasPhoto) {
   let ctx = "";
   if (descripcion) ctx += `El usuario describió el plato así: "${descripcion}". `;
   if (pesoAprox) ctx += `Estima que pesa aproximadamente ${pesoAprox} g. `;
-  return `Sos un asistente nutricional para alguien que vive en Argentina. Te paso una foto de un plato de comida. ${ctx}
-Identificá los alimentos visibles, estimá el peso total en gramos y las calorías totales aproximadas (kcal), usando valores nutricionales estándar y, cuando corresponda, equivalencias de productos y porciones típicas argentinas (fetas de fiambre, galletas de arroz, milanesas, etc.).
+  const intro = hasPhoto
+    ? "Te paso una foto de un plato de comida."
+    : "No tengo foto del plato — estimá solo a partir de la descripción en texto que te paso a continuación, sin asumir que hay una imagen.";
+  const consigna = hasPhoto ? "Identificá los alimentos visibles en la foto" : "Identificá los alimentos mencionados en la descripción";
+  return `Sos un asistente nutricional para alguien que vive en Argentina. ${intro} ${ctx}
+${consigna}, estimá el peso total en gramos y las calorías totales aproximadas (kcal), usando valores nutricionales estándar y, cuando corresponda, equivalencias de productos y porciones típicas argentinas (fetas de fiambre, galletas de arroz, milanesas, etc.).
 Respondé EXCLUSIVAMENTE con un JSON con este formato exacto, sin texto adicional, sin markdown, sin comentarios:
 {"alimentos": "descripción corta en español, ej: milanesa de pollo con puré y ensalada", "peso_aproximado_g": numero, "kcal_estimadas": numero, "confianza": "alta" o "media" o "baja"}`;
 }
 
 async function analyzePhotoWithAI({ base64Image, mimeType, descripcion, pesoAprox, apiKey }) {
-  const url = `https://generativelanguage.googleapis.com/v1beta/models/${GEMINI_MODEL}:generateContent?key=${encodeURIComponent(apiKey)}`;
-  const parts = [{ text: buildGeminiPrompt(descripcion, pesoAprox) }];
-  if (base64Image) parts.push({ inline_data: { mime_type: mimeType, data: base64Image } });
   if (!base64Image && !descripcion) throw new Error("Sacá una foto o escribí una descripción primero.");
+  const url = `https://generativelanguage.googleapis.com/v1beta/models/${GEMINI_MODEL}:generateContent?key=${encodeURIComponent(apiKey)}`;
+  const parts = [{ text: buildGeminiPrompt(descripcion, pesoAprox, !!base64Image) }];
+  if (base64Image) parts.push({ inline_data: { mime_type: mimeType, data: base64Image } });
 
   const res = await fetch(url, {
     method: "POST",
