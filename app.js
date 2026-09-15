@@ -31,6 +31,7 @@ const MEAL_TYPES = [
 ];
 const TZ = "America/Argentina/Buenos_Aires";
 const GEMINI_MODEL = "gemini-3.8-flash"; // si Google lo deprecó, cambiar acá (ver ai.google.dev/gemini-api/docs/models)
+const GEMINI_FALLBACK_MODEL = "gemini-3.1-flash-lite"; // más liviano: se usa si el principal está saturado (error 503)
 
 // ---------- estado ----------
 let currentUser = null;
@@ -540,12 +541,12 @@ Respondé EXCLUSIVAMENTE con un JSON con este formato exacto, sin texto adiciona
 {"alimentos": "descripción corta en español, ej: milanesa de pollo con puré y ensalada", "peso_aproximado_g": numero, "kcal_estimadas": numero, "confianza": "alta" o "media" o "baja"}`;
 }
 
-async function analyzePhotoWithAI({ base64Image, mimeType, descripcion, pesoAprox, apiKey }) {
-  if (!base64Image && !descripcion) throw new Error("Sacá una foto o escribí una descripción primero.");
-  const url = `https://generativelanguage.googleapis.com/v1beta/models/${GEMINI_MODEL}:generateContent?key=${encodeURIComponent(apiKey)}`;
-  const parts = [{ text: buildGeminiPrompt(descripcion, pesoAprox, !!base64Image) }];
-  if (base64Image) parts.push({ inline_data: { mime_type: mimeType, data: base64Image } });
+function sleep(ms) {
+  return new Promise((resolve) => setTimeout(resolve, ms));
+}
 
+async function callGemini(model, parts, apiKey) {
+  const url = `https://generativelanguage.googleapis.com/v1beta/models/${model}:generateContent?key=${encodeURIComponent(apiKey)}`;
   const res = await fetch(url, {
     method: "POST",
     headers: { "Content-Type": "application/json" },
@@ -557,13 +558,45 @@ async function analyzePhotoWithAI({ base64Image, mimeType, descripcion, pesoApro
   if (!res.ok) {
     let detail = "";
     try { detail = (await res.json())?.error?.message || ""; } catch (_) {}
-    throw new Error(`${res.status} ${detail || "no se pudo contactar a Gemini"}`);
+    const err = new Error(`${res.status} ${detail || "no se pudo contactar a Gemini"}`);
+    err.status = res.status;
+    throw err;
   }
   const data = await res.json();
   const text = data?.candidates?.[0]?.content?.parts?.[0]?.text;
   if (!text) throw new Error("respuesta vacía, probá de nuevo");
   try { return JSON.parse(text); }
   catch (_) { throw new Error("no pude interpretar la respuesta de la IA"); }
+}
+
+async function analyzePhotoWithAI({ base64Image, mimeType, descripcion, pesoAprox, apiKey }) {
+  if (!base64Image && !descripcion) throw new Error("Sacá una foto o escribí una descripción primero.");
+  const parts = [{ text: buildGeminiPrompt(descripcion, pesoAprox, !!base64Image) }];
+  if (base64Image) parts.push({ inline_data: { mime_type: mimeType, data: base64Image } });
+
+  // Reintentamos solo cuando Gemini responde "saturado" (503): dos intentos
+  // con el modelo principal y, si sigue sin responder, uno con un modelo
+  // más liviano que suele tener más disponibilidad. Cualquier otro error
+  // (API key inválida, sin conexión, etc.) corta al toque, sin reintentar.
+  const attempts = [
+    { model: GEMINI_MODEL, delay: 0 },
+    { model: GEMINI_MODEL, delay: 1800 },
+    { model: GEMINI_FALLBACK_MODEL, delay: 0 },
+  ];
+
+  for (let i = 0; i < attempts.length; i++) {
+    const { model, delay } = attempts[i];
+    if (delay) await sleep(delay);
+    try {
+      return await callGemini(model, parts, apiKey);
+    } catch (e) {
+      const isLastAttempt = i === attempts.length - 1;
+      if (e.status !== 503 || isLastAttempt) {
+        if (e.status === 503) throw new Error("Gemini está saturado ahora mismo. Probá de nuevo en un minuto, o cargá la comida a mano.");
+        throw e;
+      }
+    }
+  }
 }
 
 // guardar / borrar
