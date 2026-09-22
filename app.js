@@ -30,15 +30,17 @@ const MEAL_TYPES = [
   { id: "extra", label: "Extra", icon: "➕" },
 ];
 const TZ = "America/Argentina/Buenos_Aires";
-// gemini-2.5-flash-lite dejó de estar disponible para cuentas nuevas (la propia
-// API de Google devuelve un 404 recomendando pasar a gemini-3.5-flash-lite).
-// Usamos ese como principal y gemini-3.1-flash-lite como respaldo si se satura.
+// Claude es el motor principal de análisis (más consistente que las variantes
+// de Gemini que veníamos probando). Gemini queda como respaldo automático si
+// Claude falla por completo (sin key cargada, error, o saturado).
+const CLAUDE_MODEL = "claude-haiku-4-5-20251001";
 const GEMINI_MODEL = "gemini-3.5-flash-lite";
 const GEMINI_FALLBACK_MODEL = "gemini-3.1-flash-lite"; // segundo intento si el principal se satura
+const MAX_PHOTOS = 4;
 
 // ---------- estado ----------
 let currentUser = null;
-let settings = { targetMin: OBJETIVO_KCAL.min, targetMax: OBJETIVO_KCAL.max, geminiKey: "" };
+let settings = { targetMin: OBJETIVO_KCAL.min, targetMax: OBJETIVO_KCAL.max, geminiKey: "", claudeApiKey: "" };
 let selectedDate = todayISO();
 let entriesUnsub = null;
 let dayDocUnsub = null;
@@ -46,9 +48,12 @@ let currentEntries = [];
 let currentDayFlags = { water: false, activity: false };
 let currentView = "hoy"; // hoy | historial | ajustes
 let editingEntryId = null;
-let pendingPhoto = null; // { fullBase64, fullMime, thumbBase64 }
+let pendingPhotos = []; // [{ fullBase64, fullMime, thumbBase64 }]
 let historyUnsub = null;
 let historyRangeDays = 90; // 0 = todo
+let historyRangeLabel = "90 días";
+let lastHistoryDates = []; // fechas (YYYY-MM-DD) del último snapshot de historial
+let lastHistoryByDate = {}; // { fecha: [entries...] } del último snapshot de historial
 let customOptions = []; // opciones propias del usuario (Firestore: users/{uid}/menuOptions)
 let customOptionsUnsub = null;
 
@@ -145,13 +150,15 @@ async function loadSettings() {
       targetMin: d.targetMin ?? OBJETIVO_KCAL.min,
       targetMax: d.targetMax ?? OBJETIVO_KCAL.max,
       geminiKey: d.geminiKey ?? "",
+      claudeApiKey: d.claudeApiKey ?? "",
     };
   } else {
-    settings = { targetMin: OBJETIVO_KCAL.min, targetMax: OBJETIVO_KCAL.max, geminiKey: "" };
+    settings = { targetMin: OBJETIVO_KCAL.min, targetMax: OBJETIVO_KCAL.max, geminiKey: "", claudeApiKey: "" };
   }
   $("#settings-min").value = settings.targetMin;
   $("#settings-max").value = settings.targetMax;
   $("#settings-gemini-key").value = settings.geminiKey;
+  $("#settings-claude-key").value = settings.claudeApiKey;
 }
 
 $("#settings-form").addEventListener("submit", async (e) => {
@@ -159,7 +166,8 @@ $("#settings-form").addEventListener("submit", async (e) => {
   const min = Number($("#settings-min").value) || OBJETIVO_KCAL.min;
   const max = Number($("#settings-max").value) || OBJETIVO_KCAL.max;
   const geminiKey = $("#settings-gemini-key").value.trim();
-  settings = { targetMin: min, targetMax: max, geminiKey };
+  const claudeApiKey = $("#settings-claude-key").value.trim();
+  settings = { targetMin: min, targetMax: max, geminiKey, claudeApiKey };
   const ref = doc(db, "users", currentUser.uid, "settings", "profile");
   await setDoc(ref, settings, { merge: true });
   toast("Ajustes guardados");
@@ -304,15 +312,19 @@ function entryCardHTML(e) {
   if (e.hasProtein) tags.push("proteína");
   if (e.hasComplexCarb) tags.push("carbohidrato");
   if (e.kcalSource === "ia") tags.push("estimado por IA");
-  const thumb = e.photoThumb
-    ? `<img class="thumb" src="${e.photoThumb}" alt="">`
+  const photos = e.photoThumbs?.length ? e.photoThumbs : (e.photoThumb ? [e.photoThumb] : []);
+  const thumb = photos.length
+    ? `<img class="thumb" src="${photos[0]}" alt="">${photos.length > 1 ? `<span class="thumb-count">+${photos.length - 1}</span>` : ""}`
     : `<div class="thumb-placeholder">🍽️</div>`;
+  const metaParts = [];
+  if (e.weightGrams) metaParts.push(`~${e.weightGrams} g`);
+  if (e.fatGrams != null) metaParts.push(`${e.fatGrams} g grasas`);
   return `
     <div class="entry-card">
-      ${thumb}
+      <div class="thumb-wrap">${thumb}</div>
       <div class="entry-body">
         <div class="desc">${escapeHTML(e.description || "(sin descripción)")}</div>
-        <div class="meta">${e.weightGrams ? `~${e.weightGrams} g` : ""}</div>
+        <div class="meta">${metaParts.join(" · ")}</div>
         ${tags.length ? `<div class="tags">${tags.map((t) => `<span class="tag">${t}</span>`).join("")}</div>` : ""}
       </div>
       <div class="entry-kcal num">${e.kcal ?? "?"}</div>
@@ -336,11 +348,13 @@ async function deleteEntry(id) {
 
 // ---------- historial ----------
 const historyRangeSeg = $("#history-range-seg");
+const RANGE_LABELS = { 30: "30 días", 90: "90 días", 365: "1 año", 0: "Todo el historial" };
 historyRangeSeg.addEventListener("click", (e) => {
   const btn = e.target.closest("button[data-days]");
   if (!btn) return;
   historyRangeSeg.querySelectorAll("button").forEach((b) => b.classList.toggle("active", b === btn));
   historyRangeDays = Number(btn.dataset.days);
+  historyRangeLabel = RANGE_LABELS[historyRangeDays] || `${historyRangeDays} días`;
   renderHistorial();
 });
 
@@ -359,6 +373,9 @@ function renderHistorial() {
       byDate[data.date].push(data);
     });
     const dates = Object.keys(byDate).sort((a, b) => (a < b ? 1 : -1));
+    lastHistoryDates = dates;
+    lastHistoryByDate = byDate;
+    $("#export-row").hidden = dates.length === 0;
     if (dates.length === 0) {
       historySummaryEl.innerHTML = "";
       historyListEl.innerHTML = `<div class="empty-state">Todavía no hay historial en este rango. Empezá a cargar comidas en "Hoy".</div>`;
@@ -399,6 +416,66 @@ function renderHistorial() {
   }, (err) => toast("Error leyendo historial: " + err.message, true));
 }
 
+// ---------- exportar informe (para la nutricionista) ----------
+function csvEscape(v) {
+  const s = String(v ?? "");
+  return /[",\n]/.test(s) ? `"${s.replace(/"/g, '""')}"` : s;
+}
+
+$("#export-print-btn").addEventListener("click", () => {
+  if (!lastHistoryDates.length) { toast("No hay datos en este rango para exportar", true); return; }
+  const datesAsc = [...lastHistoryDates].sort();
+  let rows = "";
+  let grandKcal = 0, grandFat = 0, grandDaysWithFat = 0;
+  datesAsc.forEach((d) => {
+    const items = [...lastHistoryByDate[d]].sort((a, b) => (a.ts || 0) - (b.ts || 0));
+    const dayKcal = items.reduce((s, e) => s + (Number(e.kcal) || 0), 0);
+    const dayFat = items.reduce((s, e) => s + (Number(e.fatGrams) || 0), 0);
+    grandKcal += dayKcal;
+    if (items.some((e) => e.fatGrams != null)) { grandFat += dayFat; grandDaysWithFat++; }
+    const st = statusFor(dayKcal);
+    rows += `<tr class="day-row"><td colspan="4">${formatLongDate(d)} — ${dayKcal} kcal${dayFat ? `, ${Math.round(dayFat)} g grasas` : ""} (${st.label})</td></tr>`;
+    items.forEach((e) => {
+      const mt = MEAL_TYPES.find((m) => m.id === e.mealType);
+      rows += `<tr><td>${mt ? mt.label : e.mealType}</td><td>${escapeHTML(e.description || "(sin descripción)")}</td><td>${e.kcal ?? "-"} kcal</td><td>${e.fatGrams ?? "-"} g</td></tr>`;
+    });
+  });
+  const avgKcal = Math.round(grandKcal / datesAsc.length);
+  const avgFat = grandDaysWithFat ? Math.round(grandFat / grandDaysWithFat) : null;
+  $("#print-report").innerHTML = `
+    <h1>Cuaderno Nutricional — Informe</h1>
+    <p class="print-meta">Paciente: Jon &nbsp;·&nbsp; Rango: ${historyRangeLabel} (${datesAsc[0]} a ${datesAsc[datesAsc.length - 1]}) &nbsp;·&nbsp; Objetivo: ${settings.targetMin}–${settings.targetMax} kcal/día</p>
+    <p class="print-meta">Promedio del período: <b>${avgKcal} kcal/día</b>${avgFat != null ? ` · <b>${avgFat} g grasas/día</b>` : ""} · ${datesAsc.length} día(s) registrados</p>
+    <table>
+      <thead><tr><th>Comida</th><th>Descripción</th><th>Kcal</th><th>Grasas</th></tr></thead>
+      <tbody>${rows}</tbody>
+    </table>
+    <p class="print-footnote">Generado el ${new Date().toLocaleDateString("es-AR")} desde el Cuaderno Nutricional de Jon.</p>
+  `;
+  setTimeout(() => window.print(), 50);
+});
+
+$("#export-csv-btn").addEventListener("click", () => {
+  if (!lastHistoryDates.length) { toast("No hay datos en este rango para exportar", true); return; }
+  const datesAsc = [...lastHistoryDates].sort();
+  const lines = [["fecha", "tipo", "descripcion", "peso_g", "kcal", "grasas_g", "notas"].join(",")];
+  datesAsc.forEach((d) => {
+    [...lastHistoryByDate[d]].sort((a, b) => (a.ts || 0) - (b.ts || 0)).forEach((e) => {
+      const mt = MEAL_TYPES.find((m) => m.id === e.mealType);
+      lines.push([d, mt ? mt.label : e.mealType, e.description || "", e.weightGrams ?? "", e.kcal ?? "", e.fatGrams ?? "", e.notes || ""].map(csvEscape).join(","));
+    });
+  });
+  const blob = new Blob([lines.join("\n")], { type: "text/csv;charset=utf-8;" });
+  const url = URL.createObjectURL(blob);
+  const a = document.createElement("a");
+  a.href = url;
+  a.download = `cuaderno-nutricional-${todayISO()}.csv`;
+  document.body.appendChild(a);
+  a.click();
+  a.remove();
+  URL.revokeObjectURL(url);
+});
+
 // ---------- sheet: agregar/editar comida ----------
 const fabBtn = $("#fab-add");
 fabBtn.addEventListener("click", () => openSheet(null));
@@ -407,7 +484,8 @@ sheetBackdrop.addEventListener("click", (e) => { if (e.target === sheetBackdrop)
 
 function openSheet(entry) {
   editingEntryId = entry ? entry.id : null;
-  pendingPhoto = entry?.photoThumb ? { thumbBase64: entry.photoThumb, fullBase64: null, fullMime: null } : null;
+  const existingThumbs = entry?.photoThumbs?.length ? entry.photoThumbs : (entry?.photoThumb ? [entry.photoThumb] : []);
+  pendingPhotos = existingThumbs.map((t) => ({ thumbBase64: t, fullBase64: null, fullMime: null }));
 
   $("#sheet-title").textContent = entry ? "Editar comida" : "Agregar comida";
   setMealType(entry?.mealType || guessMealType());
@@ -415,20 +493,21 @@ function openSheet(entry) {
   $("#entry-desc").value = entry?.description || "";
   $("#entry-weight").value = entry?.weightGrams || "";
   $("#entry-kcal").value = entry?.kcal ?? "";
+  $("#entry-fat").value = entry?.fatGrams ?? "";
   $("#entry-notes").value = entry?.notes || "";
   $("#chk-veggies").checked = !!entry?.hasVeggies;
   $("#chk-protein").checked = !!entry?.hasProtein;
   $("#chk-carb").checked = !!entry?.hasComplexCarb;
   if (entry?.kcalSource === "ia") $("#entry-desc").dataset.aiSource = "1";
   else delete $("#entry-desc").dataset.aiSource;
-  updatePhotoPreview();
+  renderPhotoPreviews();
   $("#delete-entry-btn").hidden = !entry;
   sheetBackdrop.hidden = false;
 }
 function closeSheet() {
   sheetBackdrop.hidden = true;
   editingEntryId = null;
-  pendingPhoto = null;
+  pendingPhotos = [];
   $("#entry-form").reset();
 }
 function guessMealType() {
@@ -534,39 +613,55 @@ $("#qo-save-btn").addEventListener("click", async () => {
   }
 });
 
-// foto (siempre opcional — se puede guardar y analizar sin ella)
+// fotos (siempre opcionales, hasta MAX_PHOTOS — se puede guardar y analizar sin ellas)
 const photoInput = $("#photo-input");
 $("#photo-btn").addEventListener("click", () => photoInput.click());
-$("#photo-remove-btn").addEventListener("click", () => {
-  pendingPhoto = null;
-  photoInput.value = "";
-  updatePhotoPreview();
-});
+$("#photo-add-btn").addEventListener("click", () => photoInput.click());
 photoInput.addEventListener("change", async () => {
-  const file = photoInput.files[0];
-  if (!file) return;
-  try {
-    const full = await resizeImageToBase64(file, 900, 0.75);
-    const thumb = await resizeImageToBase64(file, 260, 0.55);
-    pendingPhoto = { fullBase64: full.base64, fullMime: full.mime, thumbBase64: thumb.dataUrl };
-    updatePhotoPreview();
-  } catch (e) {
-    toast("No pude procesar la foto: " + e.message, true);
+  const files = Array.from(photoInput.files || []);
+  photoInput.value = "";
+  if (!files.length) return;
+  const room = MAX_PHOTOS - pendingPhotos.length;
+  if (room <= 0) { toast(`Máximo ${MAX_PHOTOS} fotos por comida`, true); return; }
+  const toProcess = files.slice(0, room);
+  if (files.length > room) toast(`Solo se agregaron ${room} foto(s) — máximo ${MAX_PHOTOS} por comida`, true);
+  for (const file of toProcess) {
+    try {
+      const full = await resizeImageToBase64(file, 900, 0.75);
+      const thumb = await resizeImageToBase64(file, 260, 0.55);
+      pendingPhotos.push({ fullBase64: full.base64, fullMime: full.mime, thumbBase64: thumb.dataUrl });
+    } catch (e) {
+      toast("No pude procesar una foto: " + e.message, true);
+    }
   }
+  renderPhotoPreviews();
 });
-function updatePhotoPreview() {
+function renderPhotoPreviews() {
   const wrap = $("#photo-preview-wrap");
   const rowEmpty = $("#photo-row-empty");
   const rowFilled = $("#photo-row-filled");
-  if (pendingPhoto?.thumbBase64) {
-    wrap.innerHTML = `<img class="photo-preview" src="${pendingPhoto.thumbBase64}" alt="">`;
-    rowEmpty.hidden = true;
-    rowFilled.hidden = false;
-  } else {
+  const addBtn = $("#photo-add-btn");
+  if (pendingPhotos.length === 0) {
     wrap.innerHTML = "";
     rowEmpty.hidden = false;
     rowFilled.hidden = true;
+    return;
   }
+  rowEmpty.hidden = true;
+  rowFilled.hidden = false;
+  addBtn.hidden = pendingPhotos.length >= MAX_PHOTOS;
+  wrap.innerHTML = pendingPhotos.map((p, i) => `
+    <div class="photo-thumb-wrap">
+      <img class="photo-preview" src="${p.thumbBase64}" alt="">
+      <button type="button" class="photo-thumb-remove" data-idx="${i}" title="Quitar foto">✕</button>
+    </div>
+  `).join("");
+  wrap.querySelectorAll(".photo-thumb-remove").forEach((btn) => {
+    btn.addEventListener("click", () => {
+      pendingPhotos.splice(Number(btn.dataset.idx), 1);
+      renderPhotoPreviews();
+    });
+  });
 }
 
 function resizeImageToBase64(file, maxDim, quality) {
@@ -592,25 +687,26 @@ function resizeImageToBase64(file, maxDim, quality) {
 
 // análisis con IA
 $("#ai-analyze-btn").addEventListener("click", async () => {
-  if (!settings.geminiKey) {
-    toast("Antes cargá tu API key de Gemini en Ajustes", true);
+  if (!settings.claudeApiKey && !settings.geminiKey) {
+    toast("Antes cargá al menos una API key (Claude o Gemini) en Ajustes", true);
     return;
   }
   const btn = $("#ai-analyze-btn");
   btn.disabled = true;
   btn.innerHTML = `<span class="spinner"></span> Analizando...`;
   try {
-    const result = await analyzePhotoWithAI({
-      base64Image: pendingPhoto?.fullBase64 || null,
-      mimeType: pendingPhoto?.fullMime || null,
+    const result = await analyzeFoodWithAI({
+      images: pendingPhotos.map(toApiImage).filter(Boolean),
       descripcion: $("#entry-desc").value.trim(),
       pesoAprox: $("#entry-weight").value,
-      apiKey: settings.geminiKey,
+      claudeKey: settings.claudeApiKey,
+      geminiKey: settings.geminiKey,
     });
     if (result.alimentos) $("#entry-desc").value = result.alimentos;
     if (result.peso_aproximado_g) $("#entry-weight").value = Math.round(result.peso_aproximado_g);
     if (result.kcal_estimadas) $("#entry-kcal").value = Math.round(result.kcal_estimadas);
-    toast(`IA: ~${Math.round(result.kcal_estimadas)} kcal (confianza ${result.confianza || "media"}). Revisá y ajustá si hace falta.`);
+    if (result.grasas_estimadas_g != null) $("#entry-fat").value = Math.round(result.grasas_estimadas_g);
+    toast(`IA: ~${Math.round(result.kcal_estimadas)} kcal, ~${Math.round(result.grasas_estimadas_g ?? 0)} g grasas (confianza ${result.confianza || "media"}). Revisá y ajustá si hace falta.`);
     $("#entry-desc").dataset.aiSource = "1";
   } catch (e) {
     toast("Error de la IA: " + e.message, true);
@@ -620,25 +716,90 @@ $("#ai-analyze-btn").addEventListener("click", async () => {
   }
 });
 
-function buildGeminiPrompt(descripcion, pesoAprox, hasPhoto) {
+// Convierte una foto pendiente en el formato {base64, mime} que esperan las
+// llamadas a la IA. Si la foto es de una comida que se está editando y no
+// tenemos la versión completa en memoria (solo el thumbnail guardado en
+// Firestore), usamos igual el thumbnail — pierde algo de calidad pero sigue
+// siendo mejor que no mandar nada.
+function toApiImage(p) {
+  if (p.fullBase64) return { base64: p.fullBase64, mime: p.fullMime || "image/jpeg" };
+  if (p.thumbBase64) {
+    const match = /^data:(.*?);base64,(.*)$/.exec(p.thumbBase64);
+    if (match) return { base64: match[2], mime: match[1] || "image/jpeg" };
+  }
+  return null;
+}
+
+function buildAnalysisPrompt(descripcion, pesoAprox, photoCount) {
   let ctx = "";
   if (descripcion) ctx += `El usuario describió el plato así: "${descripcion}". `;
   if (pesoAprox) ctx += `Estima que pesa aproximadamente ${pesoAprox} g. `;
-  const intro = hasPhoto
-    ? "Te paso una foto de un plato de comida."
+  const intro = photoCount > 0
+    ? (photoCount > 1
+      ? `Te paso ${photoCount} fotos del mismo plato de comida (distintos ángulos o partes del mismo plato).`
+      : "Te paso una foto de un plato de comida.")
     : "No tengo foto del plato — estimá solo a partir de la descripción en texto que te paso a continuación, sin asumir que hay una imagen.";
-  const consigna = hasPhoto ? "Identificá los alimentos visibles en la foto" : "Identificá los alimentos mencionados en la descripción";
+  const consigna = photoCount > 0 ? "Identificá los alimentos visibles en la(s) foto(s)" : "Identificá los alimentos mencionados en la descripción";
   return `Sos un asistente nutricional para alguien que vive en Argentina. ${intro} ${ctx}
-${consigna}, estimá el peso total en gramos y las calorías totales aproximadas (kcal), usando valores nutricionales estándar y, cuando corresponda, equivalencias de productos y porciones típicas argentinas (fetas de fiambre, galletas de arroz, milanesas, etc.).
+${consigna}, estimá el peso total en gramos, las calorías totales aproximadas (kcal) y los gramos totales de grasa aproximados, usando valores nutricionales estándar y, cuando corresponda, equivalencias de productos y porciones típicas argentinas (fetas de fiambre, galletas de arroz, milanesas, etc.).
 Respondé EXCLUSIVAMENTE con un JSON con este formato exacto, sin texto adicional, sin markdown, sin comentarios:
-{"alimentos": "descripción corta en español, ej: milanesa de pollo con puré y ensalada", "peso_aproximado_g": numero, "kcal_estimadas": numero, "confianza": "alta" o "media" o "baja"}`;
+{"alimentos": "descripción corta en español, ej: milanesa de pollo con puré y ensalada", "peso_aproximado_g": numero, "kcal_estimadas": numero, "grasas_estimadas_g": numero, "confianza": "alta" o "media" o "baja"}`;
 }
 
 function sleep(ms) {
   return new Promise((resolve) => setTimeout(resolve, ms));
 }
 
-async function callGemini(model, parts, apiKey) {
+// Extrae el JSON de la respuesta de texto de la IA. A veces (sobre todo
+// Claude, que no tiene un modo "solo JSON" forzado como Gemini) puede
+// envolver la respuesta en texto o en un bloque ```json — probamos el parseo
+// directo y, si falla, recortamos entre la primera { y la última }.
+function extractJSON(text) {
+  try { return JSON.parse(text); } catch (_) {}
+  const start = text.indexOf("{");
+  const end = text.lastIndexOf("}");
+  if (start !== -1 && end !== -1 && end > start) {
+    try { return JSON.parse(text.slice(start, end + 1)); } catch (_) {}
+  }
+  throw new Error("no pude interpretar la respuesta de la IA");
+}
+
+async function callClaude(model, images, promptText, apiKey) {
+  const content = [
+    ...images.map((img) => ({ type: "image", source: { type: "base64", media_type: img.mime, data: img.base64 } })),
+    { type: "text", text: promptText },
+  ];
+  const res = await fetch("https://api.anthropic.com/v1/messages", {
+    method: "POST",
+    headers: {
+      "Content-Type": "application/json",
+      "x-api-key": apiKey,
+      "anthropic-version": "2023-06-01",
+      // Necesario para llamar a la API de Anthropic directo desde el navegador
+      // (si no, el pedido se bloquea por CORS). La key queda solo en tu cuenta
+      // de Firestore, igual que la de Gemini — nunca se sube a GitHub.
+      "anthropic-dangerous-direct-browser-access": "true",
+    },
+    body: JSON.stringify({ model, max_tokens: 500, messages: [{ role: "user", content }] }),
+  });
+  if (!res.ok) {
+    let detail = "";
+    try { detail = (await res.json())?.error?.message || ""; } catch (_) {}
+    const err = new Error(`${res.status} ${detail || "no se pudo contactar a Claude"}`);
+    err.status = res.status;
+    throw err;
+  }
+  const data = await res.json();
+  const text = data?.content?.[0]?.text;
+  if (!text) throw new Error("respuesta vacía de Claude, probá de nuevo");
+  return extractJSON(text);
+}
+
+async function callGemini(model, images, promptText, apiKey) {
+  const parts = [
+    { text: promptText },
+    ...images.map((img) => ({ inline_data: { mime_type: img.mime, data: img.base64 } })),
+  ];
   const url = `https://generativelanguage.googleapis.com/v1beta/models/${model}:generateContent?key=${encodeURIComponent(apiKey)}`;
   const res = await fetch(url, {
     method: "POST",
@@ -657,39 +818,57 @@ async function callGemini(model, parts, apiKey) {
   }
   const data = await res.json();
   const text = data?.candidates?.[0]?.content?.parts?.[0]?.text;
-  if (!text) throw new Error("respuesta vacía, probá de nuevo");
-  try { return JSON.parse(text); }
-  catch (_) { throw new Error("no pude interpretar la respuesta de la IA"); }
+  if (!text) throw new Error("respuesta vacía de Gemini, probá de nuevo");
+  return extractJSON(text);
 }
 
-async function analyzePhotoWithAI({ base64Image, mimeType, descripcion, pesoAprox, apiKey }) {
-  if (!base64Image && !descripcion) throw new Error("Sacá una foto o escribí una descripción primero.");
-  const parts = [{ text: buildGeminiPrompt(descripcion, pesoAprox, !!base64Image) }];
-  if (base64Image) parts.push({ inline_data: { mime_type: mimeType, data: base64Image } });
-
-  // Reintentamos solo cuando Gemini responde "saturado" (503): dos intentos
-  // con el modelo principal y, si sigue sin responder, uno con un modelo
-  // más liviano que suele tener más disponibilidad. Cualquier otro error
-  // (API key inválida, sin conexión, etc.) corta al toque, sin reintentar.
-  const attempts = [
-    { model: GEMINI_MODEL, delay: 0 },
-    { model: GEMINI_MODEL, delay: 1800 },
-    { model: GEMINI_FALLBACK_MODEL, delay: 0 },
-  ];
-
+// Reintenta una tanda de intentos del mismo proveedor mientras el error sea
+// de "saturado" (429/503/529). Cualquier otro error (key inválida, sin
+// conexión) corta esa tanda al toque para pasar directo al otro proveedor.
+async function tryProviderAttempts(attempts) {
+  let lastErr = null;
   for (let i = 0; i < attempts.length; i++) {
-    const { model, delay } = attempts[i];
+    const { run, delay } = attempts[i];
     if (delay) await sleep(delay);
     try {
-      return await callGemini(model, parts, apiKey);
+      return await run();
     } catch (e) {
-      const isLastAttempt = i === attempts.length - 1;
-      if (e.status !== 503 || isLastAttempt) {
-        if (e.status === 503) throw new Error("Gemini está saturado ahora mismo. Probá de nuevo en un minuto, o cargá la comida a mano.");
-        throw e;
-      }
+      lastErr = e;
+      const overloaded = e.status === 429 || e.status === 503 || e.status === 529;
+      if (!overloaded) throw e;
     }
   }
+  throw lastErr;
+}
+
+async function analyzeFoodWithAI({ images, descripcion, pesoAprox, claudeKey, geminiKey }) {
+  if (!images.length && !descripcion) throw new Error("Sacá una foto o escribí una descripción primero.");
+  if (!claudeKey && !geminiKey) throw new Error("Cargá al menos una API key (Claude o Gemini) en Ajustes.");
+  const promptText = buildAnalysisPrompt(descripcion, pesoAprox, images.length);
+  let lastError = null;
+
+  // Claude es el motor principal (con su propio reintento si está saturado).
+  if (claudeKey) {
+    try {
+      return await tryProviderAttempts([
+        { run: () => callClaude(CLAUDE_MODEL, images, promptText, claudeKey), delay: 0 },
+        { run: () => callClaude(CLAUDE_MODEL, images, promptText, claudeKey), delay: 1800 },
+      ]);
+    } catch (e) { lastError = e; }
+  }
+  // Si Claude no está configurado o falló del todo, Gemini como respaldo.
+  if (geminiKey) {
+    try {
+      return await tryProviderAttempts([
+        { run: () => callGemini(GEMINI_MODEL, images, promptText, geminiKey), delay: 0 },
+        { run: () => callGemini(GEMINI_FALLBACK_MODEL, images, promptText, geminiKey), delay: 0 },
+      ]);
+    } catch (e) { lastError = e; }
+  }
+
+  const overloaded = lastError && (lastError.status === 429 || lastError.status === 503 || lastError.status === 529);
+  if (overloaded) throw new Error("La IA está saturada ahora mismo. Probá de nuevo en un minuto, o cargá la comida a mano.");
+  throw lastError || new Error("No se pudo analizar, probá de nuevo.");
 }
 
 // guardar / borrar
@@ -700,18 +879,21 @@ $("#entry-form").addEventListener("submit", async (e) => {
   if (kcalRaw === "") { toast("Poné un valor de kcal (o analizalo con IA)", true); return; }
   const kcal = Number(kcalRaw);
 
+  const fatRaw = $("#entry-fat").value;
   const payload = {
     date: selectedDate,
     mealType,
     description: $("#entry-desc").value.trim(),
     weightGrams: $("#entry-weight").value ? Number($("#entry-weight").value) : null,
     kcal,
+    fatGrams: fatRaw !== "" ? Number(fatRaw) : null,
     kcalSource: $("#entry-desc").dataset.aiSource ? "ia" : "manual",
     hasVeggies: $("#chk-veggies").checked,
     hasProtein: $("#chk-protein").checked,
     hasComplexCarb: $("#chk-carb").checked,
     notes: $("#entry-notes").value.trim(),
-    photoThumb: pendingPhoto?.thumbBase64 || null,
+    photoThumbs: pendingPhotos.length ? pendingPhotos.map((p) => p.thumbBase64) : null,
+    photoThumb: null, // campo viejo (foto única); lo dejamos en null para no confundir lecturas anteriores
     updatedAt: serverTimestamp(),
   };
 
