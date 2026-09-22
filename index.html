@@ -69,6 +69,10 @@
             <button type="button" data-days="0">Todo</button>
           </div>
           <div id="history-summary" style="margin-bottom:14px;"></div>
+          <div class="export-row" id="export-row" hidden>
+            <button type="button" class="photo-btn" id="export-print-btn">📄 Exportar informe (PDF)</button>
+            <button type="button" class="photo-btn" id="export-csv-btn">⬇️ Descargar CSV</button>
+          </div>
           <div id="history-list" style="display:flex;flex-direction:column;gap:10px;"></div>
         </section>
 
@@ -82,8 +86,11 @@
               <div class="field"><label for="settings-max">Máximo (kcal)</label><input type="number" id="settings-max" min="0" step="10"></div>
             </div>
             <h3 style="margin-top:6px;">Análisis de fotos con IA</h3>
-            <p class="hint">Tu API key de Google Gemini (gratuita). Se guarda solo en tu cuenta — nunca se sube a GitHub. Sacala en <a href="https://aistudio.google.com/apikey" target="_blank" rel="noopener">aistudio.google.com/apikey</a>.</p>
-            <div class="field"><label for="settings-gemini-key">API key de Gemini</label><input type="text" id="settings-gemini-key" placeholder="AIza..." autocomplete="off"></div>
+            <p class="hint">Usa Claude (Anthropic) como motor principal y Gemini como respaldo si Claude falla. Con que cargues una de las dos alcanza, pero con las dos la app es más resistente a caídas. Ninguna key se sube a GitHub, se guardan solo en tu cuenta.</p>
+            <div class="field"><label for="settings-claude-key">API key de Claude (principal)</label><input type="text" id="settings-claude-key" placeholder="sk-ant-..." autocomplete="off"></div>
+            <p class="hint" style="margin-top:-6px;">Sacala en <a href="https://console.anthropic.com/settings/keys" target="_blank" rel="noopener">console.anthropic.com/settings/keys</a>. A diferencia de Gemini, Anthropic no tiene nivel gratuito permanente — es de pago por uso, pero con el modelo liviano que usa la app el gasto de analizar fotos de comida es de centavos al mes.</p>
+            <div class="field"><label for="settings-gemini-key">API key de Gemini (respaldo)</label><input type="text" id="settings-gemini-key" placeholder="AIza..." autocomplete="off"></div>
+            <p class="hint" style="margin-top:-6px;">Gratuita, en <a href="https://aistudio.google.com/apikey" target="_blank" rel="noopener">aistudio.google.com/apikey</a>.</p>
             <button type="submit" class="primary-btn">Guardar ajustes</button>
           </form>
           <p style="text-align:center;font-size:0.78rem;color:var(--ink-faint);">Cuaderno Nutricional · hecho para Jon</p>
@@ -139,22 +146,23 @@
         </div>
 
         <div class="field">
-          <label>Foto del plato <span style="text-transform:none;font-weight:400;">— opcional, solo si querés que la IA te ayude a estimar</span></label>
+          <label>Fotos del plato <span style="text-transform:none;font-weight:400;">— opcional, hasta 4, para que la IA te ayude a estimar</span></label>
           <div class="photo-row" id="photo-row-empty">
             <button type="button" class="photo-btn" id="photo-btn">📷 Agregar foto (opcional)</button>
           </div>
-          <div class="photo-row" id="photo-row-filled" hidden>
-            <div id="photo-preview-wrap"></div>
-            <button type="button" class="photo-btn" id="photo-remove-btn" style="flex:none;">Quitar foto</button>
+          <div class="photo-row-filled" id="photo-row-filled" hidden>
+            <div class="photo-thumbs" id="photo-preview-wrap"></div>
+            <button type="button" class="photo-btn" id="photo-add-btn">+ Agregar otra foto</button>
           </div>
-          <input type="file" id="photo-input" accept="image/*" hidden>
+          <input type="file" id="photo-input" accept="image/*" multiple hidden>
           <button type="button" class="ai-btn" id="ai-analyze-btn">🔍 Analizar con IA</button>
-          <p class="ai-note">Funciona con foto, con descripción escrita, o ambas — no hace falta sacar foto para cargar una comida. Siempre revisá el resultado antes de guardar.</p>
+          <p class="ai-note">Funciona con foto(s), con descripción escrita, o ambas — no hace falta sacar foto para cargar una comida. Podés sacar varias fotos del mismo plato (distintos ángulos) para que la estimación sea más precisa. Siempre revisá el resultado antes de guardar.</p>
         </div>
 
         <div class="range-row">
           <div class="field"><label for="entry-weight">Peso aprox. (g)</label><input type="number" id="entry-weight" min="0" step="10" placeholder="150"></div>
           <div class="field"><label for="entry-kcal">Kcal</label><input type="number" id="entry-kcal" min="0" step="5" placeholder="300"></div>
+          <div class="field"><label for="entry-fat">Grasas (g)</label><input type="number" id="entry-fat" min="0" step="1" placeholder="10"></div>
         </div>
 
         <div class="field">
@@ -178,6 +186,8 @@
   </div>
 
   <div class="toast" id="toast" hidden></div>
+
+  <div id="print-report"></div>
 
   <script type="module" src="app.js"></script>
 </body>
