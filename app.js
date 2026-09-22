@@ -30,17 +30,13 @@ const MEAL_TYPES = [
   { id: "extra", label: "Extra", icon: "➕" },
 ];
 const TZ = "America/Argentina/Buenos_Aires";
-// Claude es el motor principal de análisis (más consistente que las variantes
-// de Gemini que veníamos probando). Gemini queda como respaldo automático si
-// Claude falla por completo (sin key cargada, error, o saturado).
-const CLAUDE_MODEL = "claude-haiku-4-5-20251001";
 const GEMINI_MODEL = "gemini-3.5-flash-lite";
 const GEMINI_FALLBACK_MODEL = "gemini-3.1-flash-lite"; // segundo intento si el principal se satura
 const MAX_PHOTOS = 4;
 
 // ---------- estado ----------
 let currentUser = null;
-let settings = { targetMin: OBJETIVO_KCAL.min, targetMax: OBJETIVO_KCAL.max, geminiKey: "", claudeApiKey: "" };
+let settings = { targetMin: OBJETIVO_KCAL.min, targetMax: OBJETIVO_KCAL.max, geminiKey: "" };
 let selectedDate = todayISO();
 let entriesUnsub = null;
 let dayDocUnsub = null;
@@ -150,15 +146,13 @@ async function loadSettings() {
       targetMin: d.targetMin ?? OBJETIVO_KCAL.min,
       targetMax: d.targetMax ?? OBJETIVO_KCAL.max,
       geminiKey: d.geminiKey ?? "",
-      claudeApiKey: d.claudeApiKey ?? "",
     };
   } else {
-    settings = { targetMin: OBJETIVO_KCAL.min, targetMax: OBJETIVO_KCAL.max, geminiKey: "", claudeApiKey: "" };
+    settings = { targetMin: OBJETIVO_KCAL.min, targetMax: OBJETIVO_KCAL.max, geminiKey: "" };
   }
   $("#settings-min").value = settings.targetMin;
   $("#settings-max").value = settings.targetMax;
   $("#settings-gemini-key").value = settings.geminiKey;
-  $("#settings-claude-key").value = settings.claudeApiKey;
 }
 
 $("#settings-form").addEventListener("submit", async (e) => {
@@ -166,8 +160,7 @@ $("#settings-form").addEventListener("submit", async (e) => {
   const min = Number($("#settings-min").value) || OBJETIVO_KCAL.min;
   const max = Number($("#settings-max").value) || OBJETIVO_KCAL.max;
   const geminiKey = $("#settings-gemini-key").value.trim();
-  const claudeApiKey = $("#settings-claude-key").value.trim();
-  settings = { targetMin: min, targetMax: max, geminiKey, claudeApiKey };
+  settings = { targetMin: min, targetMax: max, geminiKey };
   const ref = doc(db, "users", currentUser.uid, "settings", "profile");
   await setDoc(ref, settings, { merge: true });
   toast("Ajustes guardados");
@@ -434,10 +427,12 @@ $("#export-print-btn").addEventListener("click", () => {
     grandKcal += dayKcal;
     if (items.some((e) => e.fatGrams != null)) { grandFat += dayFat; grandDaysWithFat++; }
     const st = statusFor(dayKcal);
-    rows += `<tr class="day-row"><td colspan="4">${formatLongDate(d)} — ${dayKcal} kcal${dayFat ? `, ${Math.round(dayFat)} g grasas` : ""} (${st.label})</td></tr>`;
+    rows += `<tr class="day-row"><td colspan="5">${formatLongDate(d)} — ${dayKcal} kcal${dayFat ? `, ${Math.round(dayFat)} g grasas` : ""} (${st.label})</td></tr>`;
     items.forEach((e) => {
       const mt = MEAL_TYPES.find((m) => m.id === e.mealType);
-      rows += `<tr><td>${mt ? mt.label : e.mealType}</td><td>${escapeHTML(e.description || "(sin descripción)")}</td><td>${e.kcal ?? "-"} kcal</td><td>${e.fatGrams ?? "-"} g</td></tr>`;
+      const photos = e.photoThumbs?.length ? e.photoThumbs : (e.photoThumb ? [e.photoThumb] : []);
+      const photoCell = photos.length ? `<img class="print-thumb" src="${photos[0]}" alt="">` : "";
+      rows += `<tr><td>${photoCell}</td><td>${mt ? mt.label : e.mealType}</td><td>${escapeHTML(e.description || "(sin descripción)")}</td><td>${e.kcal ?? "-"} kcal</td><td>${e.fatGrams ?? "-"} g</td></tr>`;
     });
   });
   const avgKcal = Math.round(grandKcal / datesAsc.length);
@@ -447,7 +442,7 @@ $("#export-print-btn").addEventListener("click", () => {
     <p class="print-meta">Paciente: Jon &nbsp;·&nbsp; Rango: ${historyRangeLabel} (${datesAsc[0]} a ${datesAsc[datesAsc.length - 1]}) &nbsp;·&nbsp; Objetivo: ${settings.targetMin}–${settings.targetMax} kcal/día</p>
     <p class="print-meta">Promedio del período: <b>${avgKcal} kcal/día</b>${avgFat != null ? ` · <b>${avgFat} g grasas/día</b>` : ""} · ${datesAsc.length} día(s) registrados</p>
     <table>
-      <thead><tr><th>Comida</th><th>Descripción</th><th>Kcal</th><th>Grasas</th></tr></thead>
+      <thead><tr><th>Foto</th><th>Comida</th><th>Descripción</th><th>Kcal</th><th>Grasas</th></tr></thead>
       <tbody>${rows}</tbody>
     </table>
     <p class="print-footnote">Generado el ${new Date().toLocaleDateString("es-AR")} desde el Cuaderno Nutricional de Jon.</p>
@@ -687,8 +682,8 @@ function resizeImageToBase64(file, maxDim, quality) {
 
 // análisis con IA
 $("#ai-analyze-btn").addEventListener("click", async () => {
-  if (!settings.claudeApiKey && !settings.geminiKey) {
-    toast("Antes cargá al menos una API key (Claude o Gemini) en Ajustes", true);
+  if (!settings.geminiKey) {
+    toast("Antes cargá tu API key de Gemini en Ajustes", true);
     return;
   }
   const btn = $("#ai-analyze-btn");
@@ -699,7 +694,6 @@ $("#ai-analyze-btn").addEventListener("click", async () => {
       images: pendingPhotos.map(toApiImage).filter(Boolean),
       descripcion: $("#entry-desc").value.trim(),
       pesoAprox: $("#entry-weight").value,
-      claudeKey: settings.claudeApiKey,
       geminiKey: settings.geminiKey,
     });
     if (result.alimentos) $("#entry-desc").value = result.alimentos;
@@ -750,10 +744,9 @@ function sleep(ms) {
   return new Promise((resolve) => setTimeout(resolve, ms));
 }
 
-// Extrae el JSON de la respuesta de texto de la IA. A veces (sobre todo
-// Claude, que no tiene un modo "solo JSON" forzado como Gemini) puede
-// envolver la respuesta en texto o en un bloque ```json — probamos el parseo
-// directo y, si falla, recortamos entre la primera { y la última }.
+// Extrae el JSON de la respuesta de texto de Gemini. Normalmente ya viene
+// limpio (responseMimeType: "application/json"), pero por las dudas si algo
+// lo envuelve en texto probamos recortar entre la primera { y la última }.
 function extractJSON(text) {
   try { return JSON.parse(text); } catch (_) {}
   const start = text.indexOf("{");
@@ -762,37 +755,6 @@ function extractJSON(text) {
     try { return JSON.parse(text.slice(start, end + 1)); } catch (_) {}
   }
   throw new Error("no pude interpretar la respuesta de la IA");
-}
-
-async function callClaude(model, images, promptText, apiKey) {
-  const content = [
-    ...images.map((img) => ({ type: "image", source: { type: "base64", media_type: img.mime, data: img.base64 } })),
-    { type: "text", text: promptText },
-  ];
-  const res = await fetch("https://api.anthropic.com/v1/messages", {
-    method: "POST",
-    headers: {
-      "Content-Type": "application/json",
-      "x-api-key": apiKey,
-      "anthropic-version": "2023-06-01",
-      // Necesario para llamar a la API de Anthropic directo desde el navegador
-      // (si no, el pedido se bloquea por CORS). La key queda solo en tu cuenta
-      // de Firestore, igual que la de Gemini — nunca se sube a GitHub.
-      "anthropic-dangerous-direct-browser-access": "true",
-    },
-    body: JSON.stringify({ model, max_tokens: 500, messages: [{ role: "user", content }] }),
-  });
-  if (!res.ok) {
-    let detail = "";
-    try { detail = (await res.json())?.error?.message || ""; } catch (_) {}
-    const err = new Error(`${res.status} ${detail || "no se pudo contactar a Claude"}`);
-    err.status = res.status;
-    throw err;
-  }
-  const data = await res.json();
-  const text = data?.content?.[0]?.text;
-  if (!text) throw new Error("respuesta vacía de Claude, probá de nuevo");
-  return extractJSON(text);
 }
 
 async function callGemini(model, images, promptText, apiKey) {
@@ -822,53 +784,37 @@ async function callGemini(model, images, promptText, apiKey) {
   return extractJSON(text);
 }
 
-// Reintenta una tanda de intentos del mismo proveedor mientras el error sea
-// de "saturado" (429/503/529). Cualquier otro error (key inválida, sin
-// conexión) corta esa tanda al toque para pasar directo al otro proveedor.
-async function tryProviderAttempts(attempts) {
+async function analyzeFoodWithAI({ images, descripcion, pesoAprox, geminiKey }) {
+  if (!images.length && !descripcion) throw new Error("Sacá una foto o escribí una descripción primero.");
+  if (!geminiKey) throw new Error("Cargá tu API key de Gemini en Ajustes.");
+  const promptText = buildAnalysisPrompt(descripcion, pesoAprox, images.length);
+
+  // Reintentamos solo cuando Gemini responde "saturado" (503): dos intentos
+  // con el modelo principal y, si sigue sin responder, uno con un modelo
+  // más liviano que suele tener más disponibilidad. Cualquier otro error
+  // (API key inválida, sin conexión, etc.) corta al toque, sin reintentar.
+  const attempts = [
+    { model: GEMINI_MODEL, delay: 0 },
+    { model: GEMINI_MODEL, delay: 1800 },
+    { model: GEMINI_FALLBACK_MODEL, delay: 0 },
+  ];
+
   let lastErr = null;
   for (let i = 0; i < attempts.length; i++) {
-    const { run, delay } = attempts[i];
+    const { model, delay } = attempts[i];
     if (delay) await sleep(delay);
     try {
-      return await run();
+      return await callGemini(model, images, promptText, geminiKey);
     } catch (e) {
       lastErr = e;
-      const overloaded = e.status === 429 || e.status === 503 || e.status === 529;
-      if (!overloaded) throw e;
+      const isLastAttempt = i === attempts.length - 1;
+      if (e.status !== 503 || isLastAttempt) {
+        if (e.status === 503) throw new Error("Gemini está saturado ahora mismo. Probá de nuevo en un minuto, o cargá la comida a mano.");
+        throw e;
+      }
     }
   }
-  throw lastErr;
-}
-
-async function analyzeFoodWithAI({ images, descripcion, pesoAprox, claudeKey, geminiKey }) {
-  if (!images.length && !descripcion) throw new Error("Sacá una foto o escribí una descripción primero.");
-  if (!claudeKey && !geminiKey) throw new Error("Cargá al menos una API key (Claude o Gemini) en Ajustes.");
-  const promptText = buildAnalysisPrompt(descripcion, pesoAprox, images.length);
-  let lastError = null;
-
-  // Claude es el motor principal (con su propio reintento si está saturado).
-  if (claudeKey) {
-    try {
-      return await tryProviderAttempts([
-        { run: () => callClaude(CLAUDE_MODEL, images, promptText, claudeKey), delay: 0 },
-        { run: () => callClaude(CLAUDE_MODEL, images, promptText, claudeKey), delay: 1800 },
-      ]);
-    } catch (e) { lastError = e; }
-  }
-  // Si Claude no está configurado o falló del todo, Gemini como respaldo.
-  if (geminiKey) {
-    try {
-      return await tryProviderAttempts([
-        { run: () => callGemini(GEMINI_MODEL, images, promptText, geminiKey), delay: 0 },
-        { run: () => callGemini(GEMINI_FALLBACK_MODEL, images, promptText, geminiKey), delay: 0 },
-      ]);
-    } catch (e) { lastError = e; }
-  }
-
-  const overloaded = lastError && (lastError.status === 429 || lastError.status === 503 || lastError.status === 529);
-  if (overloaded) throw new Error("La IA está saturada ahora mismo. Probá de nuevo en un minuto, o cargá la comida a mano.");
-  throw lastError || new Error("No se pudo analizar, probá de nuevo.");
+  throw lastErr || new Error("No se pudo analizar, probá de nuevo.");
 }
 
 // guardar / borrar
