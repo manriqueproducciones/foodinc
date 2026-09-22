@@ -86,11 +86,8 @@
               <div class="field"><label for="settings-max">Máximo (kcal)</label><input type="number" id="settings-max" min="0" step="10"></div>
             </div>
             <h3 style="margin-top:6px;">Análisis de fotos con IA</h3>
-            <p class="hint">Usa Claude (Anthropic) como motor principal y Gemini como respaldo si Claude falla. Con que cargues una de las dos alcanza, pero con las dos la app es más resistente a caídas. Ninguna key se sube a GitHub, se guardan solo en tu cuenta.</p>
-            <div class="field"><label for="settings-claude-key">API key de Claude (principal)</label><input type="text" id="settings-claude-key" placeholder="sk-ant-..." autocomplete="off"></div>
-            <p class="hint" style="margin-top:-6px;">Sacala en <a href="https://console.anthropic.com/settings/keys" target="_blank" rel="noopener">console.anthropic.com/settings/keys</a>. A diferencia de Gemini, Anthropic no tiene nivel gratuito permanente — es de pago por uso, pero con el modelo liviano que usa la app el gasto de analizar fotos de comida es de centavos al mes.</p>
-            <div class="field"><label for="settings-gemini-key">API key de Gemini (respaldo)</label><input type="text" id="settings-gemini-key" placeholder="AIza..." autocomplete="off"></div>
-            <p class="hint" style="margin-top:-6px;">Gratuita, en <a href="https://aistudio.google.com/apikey" target="_blank" rel="noopener">aistudio.google.com/apikey</a>.</p>
+            <p class="hint">Tu API key de Google Gemini (gratuita). Se guarda solo en tu cuenta — nunca se sube a GitHub. Sacala en <a href="https://aistudio.google.com/apikey" target="_blank" rel="noopener">aistudio.google.com/apikey</a>.</p>
+            <div class="field"><label for="settings-gemini-key">API key de Gemini</label><input type="text" id="settings-gemini-key" placeholder="AIza..." autocomplete="off"></div>
             <button type="submit" class="primary-btn">Guardar ajustes</button>
           </form>
           <p style="text-align:center;font-size:0.78rem;color:var(--ink-faint);">Cuaderno Nutricional · hecho para Jon</p>
