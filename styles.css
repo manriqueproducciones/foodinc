@@ -111,6 +111,9 @@ main { flex: 1; padding: 16px; padding-bottom: 110px; display: flex; flex-direct
 .status-pill.bad { background: var(--danger-soft); color: var(--danger); }
 .status-pill.empty { background: var(--surface-alt); color: var(--ink-faint); }
 
+.summary-protein { font-size: 0.8rem; color: var(--ink-soft); margin-top: -6px; }
+.summary-protein b { color: var(--ink); font-family: 'IBM Plex Mono', monospace; }
+
 .gauge { height: 10px; border-radius: 999px; background: var(--surface-alt); overflow: hidden; position: relative; }
 .gauge-fill { height: 100%; border-radius: 999px; background: var(--green); transition: width 0.3s ease; }
 .gauge-fill.warn { background: var(--mustard); }
@@ -158,6 +161,20 @@ main { flex: 1; padding: 16px; padding-bottom: 110px; display: flex; flex-direct
 .entry-actions button {
   background: none; border: none; color: var(--ink-faint); font-size: 0.95rem; cursor: pointer; padding: 3px;
 }
+
+.dup-panel {
+  display: flex; gap: 8px; align-items: center; flex-wrap: wrap; background: var(--surface-alt);
+  border: 1px solid var(--border); border-radius: 10px; padding: 10px; margin: 6px 0 2px;
+}
+.dup-panel input[type="date"] {
+  flex: 1 1 150px; background: var(--surface); border: 1px solid var(--border); border-radius: 9px;
+  padding: 9px 10px; color: var(--ink); min-width: 0;
+}
+.dup-panel .dup-confirm {
+  background: var(--green-deep); color: #fff; border: none; border-radius: 9px; padding: 9px 12px;
+  font-weight: 600; font-size: 0.82rem; cursor: pointer;
+}
+.dup-panel .dup-cancel { background: none; border: none; color: var(--ink-faint); font-size: 0.82rem; cursor: pointer; padding: 8px; }
 
 .empty-state { text-align: center; padding: 32px 16px; color: var(--ink-faint); font-size: 0.88rem; }
 
@@ -241,19 +258,12 @@ nav.bottom-nav button.active { color: var(--green-deep); background: var(--surfa
 .ai-btn[disabled] { opacity: 0.55; }
 .ai-note { font-size: 0.76rem; color: var(--ink-faint); }
 
-.quick-options { display: flex; flex-wrap: wrap; gap: 7px; }
-.qo-chip {
-  display: inline-flex; align-items: center; gap: 6px; border: 1px solid var(--border); background: var(--surface);
-  color: var(--ink); border-radius: 999px; padding: 7px 10px 7px 12px; font-size: 0.82rem; cursor: pointer;
-  max-width: 100%;
+.qo-select-row { display: flex; gap: 8px; align-items: center; }
+.qo-select-row select {
+  flex: 1; background: var(--surface); border: 1px solid var(--border); border-radius: 10px;
+  padding: 11px 12px; color: var(--ink); font-size: 0.88rem; min-width: 0;
 }
-.qo-chip:active { background: var(--surface-alt); }
-.qo-chip .qo-kcal { color: var(--terracota); font-weight: 600; font-size: 0.78rem; white-space: nowrap; }
-.qo-chip .qo-del {
-  color: var(--ink-faint); font-weight: 700; padding: 0 2px 0 4px; border-radius: 50%; line-height: 1;
-}
-.qo-chip .qo-del:hover { color: var(--danger); }
-.qo-chip-add { border-style: dashed; color: var(--ink-soft); background: var(--surface-alt); }
+.qo-select-row #qo-delete-btn { flex: none; white-space: nowrap; padding: 8px 4px; }
 .qo-add-row { margin-top: 2px; }
 .qo-add-form { display: flex; flex-direction: column; gap: 8px; background: var(--surface-alt); border: 1px solid var(--border); border-radius: 10px; padding: 12px; margin-top: 4px; }
 .qo-add-form input {

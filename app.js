@@ -82,6 +82,7 @@ const summaryKcal = $("#summary-kcal");
 const summaryPill = $("#summary-pill");
 const gaugeFill = $("#gauge-fill");
 const gaugeTarget = $("#gauge-target");
+const summaryProteinEl = $("#summary-protein");
 const checklistEl = $("#checklist");
 const entriesListEl = $("#entries-list");
 const historyListEl = $("#history-list");
@@ -242,6 +243,18 @@ function renderSummary() {
   gaugeFill.className = "gauge-fill " + (st.cls === "bad" ? "bad" : st.cls === "warn" ? "warn" : "");
   const targetPct = Math.min(100, (settings.targetMin / settings.targetMax) * 100);
   gaugeTarget.style.left = targetPct + "%";
+
+  // Proteínas del día: solo informativo (sin objetivo), igual que las grasas
+  // no tienen meta diaria — se muestra nada más si hay al menos una comida
+  // con el dato cargado.
+  const conProteina = currentEntries.filter((e) => e.proteinGrams != null);
+  if (conProteina.length) {
+    const totalProtein = conProteina.reduce((s, e) => s + Number(e.proteinGrams), 0);
+    summaryProteinEl.innerHTML = `Proteínas hoy: <b>${Math.round(totalProtein)} g</b>`;
+    summaryProteinEl.hidden = false;
+  } else {
+    summaryProteinEl.hidden = true;
+  }
 }
 
 function renderChecklist() {
@@ -297,6 +310,24 @@ function renderEntries() {
 
   entriesListEl.querySelectorAll("[data-edit]").forEach((btn) => btn.addEventListener("click", () => openSheet(currentEntries.find((e) => e.id === btn.dataset.edit))));
   entriesListEl.querySelectorAll("[data-del]").forEach((btn) => btn.addEventListener("click", () => deleteEntry(btn.dataset.del)));
+  entriesListEl.querySelectorAll("[data-dup]").forEach((btn) => btn.addEventListener("click", () => {
+    const panel = document.getElementById(`dup-panel-${btn.dataset.dup}`);
+    if (panel) panel.hidden = !panel.hidden;
+  }));
+  entriesListEl.querySelectorAll("[data-dup-cancel]").forEach((btn) => btn.addEventListener("click", () => {
+    const panel = document.getElementById(`dup-panel-${btn.dataset.dupCancel}`);
+    if (panel) panel.hidden = true;
+  }));
+  entriesListEl.querySelectorAll("[data-dup-confirm]").forEach((btn) => btn.addEventListener("click", async () => {
+    const id = btn.dataset.dupConfirm;
+    const entry = currentEntries.find((e) => e.id === id);
+    const panel = document.getElementById(`dup-panel-${id}`);
+    const targetDate = panel?.querySelector(".dup-date")?.value;
+    if (!entry || !panel) return;
+    if (!targetDate) { toast("Elegí una fecha", true); return; }
+    await duplicateEntryToDate(entry, targetDate);
+    panel.hidden = true;
+  }));
 }
 
 function entryCardHTML(e) {
@@ -312,6 +343,7 @@ function entryCardHTML(e) {
   const metaParts = [];
   if (e.weightGrams) metaParts.push(`~${e.weightGrams} g`);
   if (e.fatGrams != null) metaParts.push(`${e.fatGrams} g grasas`);
+  if (e.proteinGrams != null) metaParts.push(`${e.proteinGrams} g proteínas`);
   return `
     <div class="entry-card">
       <div class="thumb-wrap">${thumb}</div>
@@ -319,14 +351,37 @@ function entryCardHTML(e) {
         <div class="desc">${escapeHTML(e.description || "(sin descripción)")}</div>
         <div class="meta">${metaParts.join(" · ")}</div>
         ${tags.length ? `<div class="tags">${tags.map((t) => `<span class="tag">${t}</span>`).join("")}</div>` : ""}
+        <div class="dup-panel" id="dup-panel-${e.id}" hidden>
+          <input type="date" class="dup-date" value="${selectedDate}">
+          <button type="button" class="dup-confirm" data-dup-confirm="${e.id}">Duplicar</button>
+          <button type="button" class="dup-cancel" data-dup-cancel="${e.id}">Cancelar</button>
+        </div>
       </div>
       <div class="entry-kcal num">${e.kcal ?? "?"}</div>
       <div class="entry-actions">
         <button data-edit="${e.id}" title="Editar">✏️</button>
+        <button data-dup="${e.id}" title="Duplicar a otro día">📅</button>
         <button data-del="${e.id}" title="Borrar">🗑️</button>
       </div>
     </div>
   `;
+}
+
+async function duplicateEntryToDate(entry, targetDate) {
+  try {
+    const { id, createdAt, updatedAt, ts, date, ...rest } = entry;
+    const newRef = doc(collection(db, "users", currentUser.uid, "entries"));
+    await setDoc(newRef, {
+      ...rest,
+      date: targetDate,
+      ts: Date.now(),
+      createdAt: serverTimestamp(),
+      updatedAt: serverTimestamp(),
+    });
+    toast(`Duplicada a ${formatLongDate(targetDate)}`);
+  } catch (err) {
+    toast("No se pudo duplicar: " + err.message, true);
+  }
 }
 
 function escapeHTML(s) {
@@ -419,30 +474,34 @@ $("#export-print-btn").addEventListener("click", () => {
   if (!lastHistoryDates.length) { toast("No hay datos en este rango para exportar", true); return; }
   const datesAsc = [...lastHistoryDates].sort();
   let rows = "";
-  let grandKcal = 0, grandFat = 0, grandDaysWithFat = 0;
+  let grandKcal = 0, grandFat = 0, grandDaysWithFat = 0, grandProtein = 0, grandDaysWithProtein = 0;
   datesAsc.forEach((d) => {
     const items = [...lastHistoryByDate[d]].sort((a, b) => (a.ts || 0) - (b.ts || 0));
     const dayKcal = items.reduce((s, e) => s + (Number(e.kcal) || 0), 0);
     const dayFat = items.reduce((s, e) => s + (Number(e.fatGrams) || 0), 0);
+    const dayProtein = items.reduce((s, e) => s + (Number(e.proteinGrams) || 0), 0);
     grandKcal += dayKcal;
     if (items.some((e) => e.fatGrams != null)) { grandFat += dayFat; grandDaysWithFat++; }
+    if (items.some((e) => e.proteinGrams != null)) { grandProtein += dayProtein; grandDaysWithProtein++; }
     const st = statusFor(dayKcal);
-    rows += `<tr class="day-row"><td colspan="5">${formatLongDate(d)} — ${dayKcal} kcal${dayFat ? `, ${Math.round(dayFat)} g grasas` : ""} (${st.label})</td></tr>`;
+    const dayExtras = [dayFat ? `${Math.round(dayFat)} g grasas` : "", dayProtein ? `${Math.round(dayProtein)} g proteínas` : ""].filter(Boolean).join(", ");
+    rows += `<tr class="day-row"><td colspan="6">${formatLongDate(d)} — ${dayKcal} kcal${dayExtras ? `, ${dayExtras}` : ""} (${st.label})</td></tr>`;
     items.forEach((e) => {
       const mt = MEAL_TYPES.find((m) => m.id === e.mealType);
       const photos = e.photoThumbs?.length ? e.photoThumbs : (e.photoThumb ? [e.photoThumb] : []);
       const photoCell = photos.length ? `<img class="print-thumb" src="${photos[0]}" alt="">` : "";
-      rows += `<tr><td>${photoCell}</td><td>${mt ? mt.label : e.mealType}</td><td>${escapeHTML(e.description || "(sin descripción)")}</td><td>${e.kcal ?? "-"} kcal</td><td>${e.fatGrams ?? "-"} g</td></tr>`;
+      rows += `<tr><td>${photoCell}</td><td>${mt ? mt.label : e.mealType}</td><td>${escapeHTML(e.description || "(sin descripción)")}</td><td>${e.kcal ?? "-"} kcal</td><td>${e.fatGrams ?? "-"} g</td><td>${e.proteinGrams ?? "-"} g</td></tr>`;
     });
   });
   const avgKcal = Math.round(grandKcal / datesAsc.length);
   const avgFat = grandDaysWithFat ? Math.round(grandFat / grandDaysWithFat) : null;
+  const avgProtein = grandDaysWithProtein ? Math.round(grandProtein / grandDaysWithProtein) : null;
   $("#print-report").innerHTML = `
     <h1>Cuaderno Nutricional — Informe</h1>
     <p class="print-meta">Paciente: Jon &nbsp;·&nbsp; Rango: ${historyRangeLabel} (${datesAsc[0]} a ${datesAsc[datesAsc.length - 1]}) &nbsp;·&nbsp; Objetivo: ${settings.targetMin}–${settings.targetMax} kcal/día</p>
-    <p class="print-meta">Promedio del período: <b>${avgKcal} kcal/día</b>${avgFat != null ? ` · <b>${avgFat} g grasas/día</b>` : ""} · ${datesAsc.length} día(s) registrados</p>
+    <p class="print-meta">Promedio del período: <b>${avgKcal} kcal/día</b>${avgFat != null ? ` · <b>${avgFat} g grasas/día</b>` : ""}${avgProtein != null ? ` · <b>${avgProtein} g proteínas/día</b>` : ""} · ${datesAsc.length} día(s) registrados</p>
     <table>
-      <thead><tr><th>Foto</th><th>Comida</th><th>Descripción</th><th>Kcal</th><th>Grasas</th></tr></thead>
+      <thead><tr><th>Foto</th><th>Comida</th><th>Descripción</th><th>Kcal</th><th>Grasas</th><th>Proteínas</th></tr></thead>
       <tbody>${rows}</tbody>
     </table>
     <p class="print-footnote">Generado el ${new Date().toLocaleDateString("es-AR")} desde el Cuaderno Nutricional de Jon.</p>
@@ -453,11 +512,11 @@ $("#export-print-btn").addEventListener("click", () => {
 $("#export-csv-btn").addEventListener("click", () => {
   if (!lastHistoryDates.length) { toast("No hay datos en este rango para exportar", true); return; }
   const datesAsc = [...lastHistoryDates].sort();
-  const lines = [["fecha", "tipo", "descripcion", "peso_g", "kcal", "grasas_g", "notas"].join(",")];
+  const lines = [["fecha", "tipo", "descripcion", "peso_g", "kcal", "grasas_g", "proteinas_g", "notas"].join(",")];
   datesAsc.forEach((d) => {
     [...lastHistoryByDate[d]].sort((a, b) => (a.ts || 0) - (b.ts || 0)).forEach((e) => {
       const mt = MEAL_TYPES.find((m) => m.id === e.mealType);
-      lines.push([d, mt ? mt.label : e.mealType, e.description || "", e.weightGrams ?? "", e.kcal ?? "", e.fatGrams ?? "", e.notes || ""].map(csvEscape).join(","));
+      lines.push([d, mt ? mt.label : e.mealType, e.description || "", e.weightGrams ?? "", e.kcal ?? "", e.fatGrams ?? "", e.proteinGrams ?? "", e.notes || ""].map(csvEscape).join(","));
     });
   });
   const blob = new Blob([lines.join("\n")], { type: "text/csv;charset=utf-8;" });
@@ -489,6 +548,7 @@ function openSheet(entry) {
   $("#entry-weight").value = entry?.weightGrams || "";
   $("#entry-kcal").value = entry?.kcal ?? "";
   $("#entry-fat").value = entry?.fatGrams ?? "";
+  $("#entry-protein").value = entry?.proteinGrams ?? "";
   $("#entry-notes").value = entry?.notes || "";
   $("#chk-veggies").checked = !!entry?.hasVeggies;
   $("#chk-protein").checked = !!entry?.hasProtein;
@@ -526,12 +586,14 @@ mealSeg.addEventListener("click", (e) => {
   if (btn) { setMealType(btn.dataset.meal); renderQuickOptions(); }
 });
 
-// ---------- opciones rápidas (chips) ----------
+// ---------- comidas guardadas (desplegable) ----------
 const quickOptionsEl = $("#quick-options");
+const qoDeleteBtn = $("#qo-delete-btn");
 const qoAddRow = $("#qo-add-row");
 const qoAddForm = $("#qo-add-form");
 const qoNewTexto = $("#qo-new-texto");
 const qoNewKcal = $("#qo-new-kcal");
+let quickOptionsCache = []; // espeja las <option> actuales, para leerlas al elegir/borrar
 
 function currentMealType() {
   return mealSeg.querySelector("button.active")?.dataset.meal;
@@ -544,34 +606,37 @@ function renderQuickOptions() {
   const propias = customOptions
     .filter((o) => category === null || o.category === category)
     .map((o) => ({ id: o.id, texto: o.texto, kcal: o.kcal, custom: true }));
-  const todas = [...base, ...propias];
+  quickOptionsCache = [...base, ...propias];
 
-  if (todas.length === 0) {
-    quickOptionsEl.innerHTML = `<span style="color:var(--ink-faint); font-size:0.82rem;">Todavía no hay opciones guardadas para "extra" — agregá la tuya abajo.</span>`;
-  } else {
-    quickOptionsEl.innerHTML = todas.map((o) => `
-      <button type="button" class="qo-chip" data-texto="${escapeHTML(o.texto)}" data-kcal="${o.kcal}">
-        ${escapeHTML(o.texto)} <span class="qo-kcal num">${o.kcal}</span>${o.custom ? `<span class="qo-del" data-del-id="${o.id}" title="Borrar de mi lista">✕</span>` : ""}
-      </button>
-    `).join("");
-  }
-
-  quickOptionsEl.querySelectorAll(".qo-chip[data-texto]").forEach((chip) => {
-    chip.addEventListener("click", (e) => {
-      if (e.target.closest(".qo-del")) return;
-      $("#entry-desc").value = chip.dataset.texto;
-      $("#entry-kcal").value = chip.dataset.kcal;
-      delete $("#entry-desc").dataset.aiSource;
-    });
-  });
-  quickOptionsEl.querySelectorAll(".qo-del").forEach((delBtn) => {
-    delBtn.addEventListener("click", async (e) => {
-      e.stopPropagation();
-      if (!confirm("¿Borrar esta opción de tu lista?")) return;
-      await deleteDoc(doc(db, "users", currentUser.uid, "menuOptions", delBtn.dataset.delId));
-    });
-  });
+  const placeholder = `<option value="">Elegí una comida guardada (opcional)...</option>`;
+  quickOptionsEl.innerHTML = placeholder + quickOptionsCache.map((o, i) => `
+    <option value="${i}">${escapeHTML(o.texto)} — ${o.kcal} kcal${o.custom ? " ★" : ""}</option>
+  `).join("");
+  quickOptionsEl.value = "";
+  qoDeleteBtn.hidden = true;
 }
+
+quickOptionsEl.addEventListener("change", () => {
+  const idx = quickOptionsEl.value;
+  if (idx === "") { qoDeleteBtn.hidden = true; return; }
+  const o = quickOptionsCache[Number(idx)];
+  if (!o) return;
+  $("#entry-desc").value = o.texto;
+  $("#entry-kcal").value = o.kcal;
+  delete $("#entry-desc").dataset.aiSource;
+  qoDeleteBtn.hidden = !o.custom;
+});
+
+qoDeleteBtn.addEventListener("click", async () => {
+  const idx = quickOptionsEl.value;
+  if (idx === "") return;
+  const o = quickOptionsCache[Number(idx)];
+  if (!o || !o.custom) return;
+  if (!confirm("¿Borrar esta comida de tu lista guardada?")) return;
+  await deleteDoc(doc(db, "users", currentUser.uid, "menuOptions", o.id));
+  quickOptionsEl.value = "";
+  qoDeleteBtn.hidden = true;
+});
 
 qoAddRow.addEventListener("click", (e) => {
   if (!e.target.closest("#qo-add-btn")) return;
@@ -700,7 +765,8 @@ $("#ai-analyze-btn").addEventListener("click", async () => {
     if (result.peso_aproximado_g) $("#entry-weight").value = Math.round(result.peso_aproximado_g);
     if (result.kcal_estimadas) $("#entry-kcal").value = Math.round(result.kcal_estimadas);
     if (result.grasas_estimadas_g != null) $("#entry-fat").value = Math.round(result.grasas_estimadas_g);
-    toast(`IA: ~${Math.round(result.kcal_estimadas)} kcal, ~${Math.round(result.grasas_estimadas_g ?? 0)} g grasas (confianza ${result.confianza || "media"}). Revisá y ajustá si hace falta.`);
+    if (result.proteinas_estimadas_g != null) $("#entry-protein").value = Math.round(result.proteinas_estimadas_g);
+    toast(`IA: ~${Math.round(result.kcal_estimadas)} kcal, ~${Math.round(result.grasas_estimadas_g ?? 0)} g grasas, ~${Math.round(result.proteinas_estimadas_g ?? 0)} g proteínas (confianza ${result.confianza || "media"}). Revisá y ajustá si hace falta.`);
     $("#entry-desc").dataset.aiSource = "1";
   } catch (e) {
     toast("Error de la IA: " + e.message, true);
@@ -735,9 +801,9 @@ function buildAnalysisPrompt(descripcion, pesoAprox, photoCount) {
     : "No tengo foto del plato — estimá solo a partir de la descripción en texto que te paso a continuación, sin asumir que hay una imagen.";
   const consigna = photoCount > 0 ? "Identificá los alimentos visibles en la(s) foto(s)" : "Identificá los alimentos mencionados en la descripción";
   return `Sos un asistente nutricional para alguien que vive en Argentina. ${intro} ${ctx}
-${consigna}, estimá el peso total en gramos, las calorías totales aproximadas (kcal) y los gramos totales de grasa aproximados, usando valores nutricionales estándar y, cuando corresponda, equivalencias de productos y porciones típicas argentinas (fetas de fiambre, galletas de arroz, milanesas, etc.).
+${consigna}, estimá el peso total en gramos, las calorías totales aproximadas (kcal), los gramos totales de grasa aproximados y los gramos totales de proteína aproximados, usando valores nutricionales estándar y, cuando corresponda, equivalencias de productos y porciones típicas argentinas (fetas de fiambre, galletas de arroz, milanesas, etc.).
 Respondé EXCLUSIVAMENTE con un JSON con este formato exacto, sin texto adicional, sin markdown, sin comentarios:
-{"alimentos": "descripción corta en español, ej: milanesa de pollo con puré y ensalada", "peso_aproximado_g": numero, "kcal_estimadas": numero, "grasas_estimadas_g": numero, "confianza": "alta" o "media" o "baja"}`;
+{"alimentos": "descripción corta en español, ej: milanesa de pollo con puré y ensalada", "peso_aproximado_g": numero, "kcal_estimadas": numero, "grasas_estimadas_g": numero, "proteinas_estimadas_g": numero, "confianza": "alta" o "media" o "baja"}`;
 }
 
 function sleep(ms) {
@@ -826,6 +892,7 @@ $("#entry-form").addEventListener("submit", async (e) => {
   const kcal = Number(kcalRaw);
 
   const fatRaw = $("#entry-fat").value;
+  const proteinRaw = $("#entry-protein").value;
   const payload = {
     date: selectedDate,
     mealType,
@@ -833,6 +900,7 @@ $("#entry-form").addEventListener("submit", async (e) => {
     weightGrams: $("#entry-weight").value ? Number($("#entry-weight").value) : null,
     kcal,
     fatGrams: fatRaw !== "" ? Number(fatRaw) : null,
+    proteinGrams: proteinRaw !== "" ? Number(proteinRaw) : null,
     kcalSource: $("#entry-desc").dataset.aiSource ? "ia" : "manual",
     hasVeggies: $("#chk-veggies").checked,
     hasProtein: $("#chk-protein").checked,

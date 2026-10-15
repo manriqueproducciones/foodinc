@@ -52,6 +52,7 @@
               <div class="status-pill empty" id="summary-pill">Sin registros todavía</div>
             </div>
             <div class="gauge"><div class="gauge-target" id="gauge-target"></div><div class="gauge-fill" id="gauge-fill" style="width:0%"></div></div>
+            <div class="summary-protein" id="summary-protein" hidden></div>
             <div class="checklist" id="checklist"></div>
           </div>
 
@@ -127,8 +128,11 @@
         </div>
 
         <div class="field">
-          <label>Opciones rápidas <span style="text-transform:none;font-weight:400;">— del plan, según el tipo de comida elegido arriba</span></label>
-          <div class="quick-options" id="quick-options"></div>
+          <label>Comidas guardadas <span style="text-transform:none;font-weight:400;">— del plan y las tuyas, según el tipo de comida elegido arriba</span></label>
+          <div class="qo-select-row">
+            <select id="quick-options"><option value="">Elegí una comida guardada (opcional)...</option></select>
+            <button type="button" class="ghost-btn" id="qo-delete-btn" hidden>Borrar de mi lista</button>
+          </div>
           <div class="qo-add-row" id="qo-add-row">
             <button type="button" class="photo-btn" id="qo-add-btn">+ Agregar una opción mía a la lista</button>
           </div>
@@ -153,13 +157,14 @@
           </div>
           <input type="file" id="photo-input" accept="image/*" multiple hidden>
           <button type="button" class="ai-btn" id="ai-analyze-btn">🔍 Analizar con IA</button>
-          <p class="ai-note">Funciona con foto(s), con descripción escrita, o ambas — no hace falta sacar foto para cargar una comida. Podés sacar varias fotos del mismo plato (distintos ángulos) para que la estimación sea más precisa. Siempre revisá el resultado antes de guardar.</p>
+          <p class="ai-note">Funciona con foto(s), con descripción escrita, o ambas — no hace falta sacar foto para cargar una comida. Podés sacar varias fotos del mismo plato (distintos ángulos) para que la estimación sea más precisa. Estima kcal, grasas y proteínas. Siempre revisá el resultado antes de guardar.</p>
         </div>
 
         <div class="range-row">
           <div class="field"><label for="entry-weight">Peso aprox. (g)</label><input type="number" id="entry-weight" min="0" step="10" placeholder="150"></div>
           <div class="field"><label for="entry-kcal">Kcal</label><input type="number" id="entry-kcal" min="0" step="5" placeholder="300"></div>
           <div class="field"><label for="entry-fat">Grasas (g)</label><input type="number" id="entry-fat" min="0" step="1" placeholder="10"></div>
+          <div class="field"><label for="entry-protein">Proteínas (g)</label><input type="number" id="entry-protein" min="0" step="1" placeholder="20"></div>
         </div>
 
         <div class="field">
