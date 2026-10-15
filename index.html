@@ -74,6 +74,11 @@
             <button type="button" class="photo-btn" id="export-print-btn">📄 Exportar informe (PDF)</button>
             <button type="button" class="photo-btn" id="export-csv-btn">⬇️ Descargar CSV</button>
           </div>
+          <div class="backfill-card">
+            <button type="button" class="ai-btn" id="backfill-btn">🧠 Completar grasas y proteínas faltantes con IA</button>
+            <p class="ai-note">Repasa todo tu historial (no solo este rango) y le pide a la IA que estime grasas y/o proteínas únicamente en las comidas viejas que no las tengan cargadas, a partir de la descripción y la foto si la guardaste. No toca las kcal ni ningún dato que ya tengas.</p>
+            <div class="backfill-status" id="backfill-status" hidden></div>
+          </div>
           <div id="history-list" style="display:flex;flex-direction:column;gap:10px;"></div>
         </section>
 
@@ -182,6 +187,7 @@
         </div>
 
         <button type="submit" class="primary-btn">Guardar</button>
+        <button type="button" class="photo-btn" id="save-and-list-btn">+ Guardar y agregar a mi lista</button>
         <button type="button" class="ghost-btn" id="delete-entry-btn" hidden>Borrar este registro</button>
       </form>
     </div>

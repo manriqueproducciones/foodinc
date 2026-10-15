@@ -7,7 +7,7 @@ import {
   getAuth, GoogleAuthProvider, signInWithPopup, signOut, onAuthStateChanged,
 } from "https://www.gstatic.com/firebasejs/10.7.0/firebase-auth.js";
 import {
-  getFirestore, doc, setDoc, updateDoc, deleteDoc, getDoc,
+  getFirestore, doc, setDoc, updateDoc, deleteDoc, getDoc, getDocs,
   collection, query, where, orderBy, onSnapshot, serverTimestamp,
 } from "https://www.gstatic.com/firebasejs/10.7.0/firebase-firestore.js";
 
@@ -464,6 +464,93 @@ function renderHistorial() {
   }, (err) => toast("Error leyendo historial: " + err.message, true));
 }
 
+// ---------- completar retroactivamente grasas/proteínas con IA ----------
+const backfillBtn = $("#backfill-btn");
+const backfillStatusEl = $("#backfill-status");
+const BACKFILL_LABEL = "🧠 Completar grasas y proteínas faltantes con IA";
+let backfillRunning = false;
+let backfillCancelled = false;
+
+// Convierte un data URL guardado (photoThumbs/photoThumb) al formato
+// {base64, mime} que espera analyzeFoodWithAI — mismo parseo que toApiImage
+// pero a partir de los datos crudos de Firestore, no de pendingPhotos.
+function dataUrlToApiImage(dataUrl) {
+  const match = /^data:(.*?);base64,(.*)$/.exec(dataUrl || "");
+  return match ? { base64: match[2], mime: match[1] || "image/jpeg" } : null;
+}
+
+backfillBtn.addEventListener("click", async () => {
+  if (backfillRunning) {
+    backfillCancelled = true;
+    backfillStatusEl.textContent = "Cancelando... (termina la comida que está analizando)";
+    return;
+  }
+  if (!settings.geminiKey) { toast("Antes cargá tu API key de Gemini en Ajustes", true); return; }
+  if (!confirm("Esto revisa TODO tu historial (no solo el rango que ves ahora) y le pide a la IA que estime grasas y/o proteínas en las comidas viejas que no las tengan. No toca las kcal ni los datos ya cargados. Puede tardar varios minutos si tenés muchas comidas. ¿Arrancamos?")) return;
+
+  backfillRunning = true;
+  backfillCancelled = false;
+  backfillBtn.textContent = "⏹ Cancelar";
+  backfillStatusEl.hidden = false;
+  backfillStatusEl.textContent = "Buscando comidas con datos faltantes...";
+
+  try {
+    const entriesRef = collection(db, "users", currentUser.uid, "entries");
+    const snap = await getDocs(entriesRef);
+    const todas = snap.docs.map((d) => ({ id: d.id, ...d.data() }));
+    const faltantes = todas.filter((e) => e.fatGrams == null || e.proteinGrams == null);
+
+    if (!faltantes.length) {
+      backfillStatusEl.textContent = "No encontré comidas con grasas o proteínas faltantes — ya está todo completo.";
+      return;
+    }
+
+    let ok = 0, sinDato = 0, fallidas = 0;
+    for (let i = 0; i < faltantes.length; i++) {
+      if (backfillCancelled) {
+        backfillStatusEl.textContent = `Cancelado. Se completaron ${ok} de ${faltantes.length} comidas.`;
+        break;
+      }
+      const e = faltantes[i];
+      backfillStatusEl.textContent = `Analizando ${i + 1} de ${faltantes.length}... (${ok} completadas, ${fallidas} con error)`;
+      try {
+        const photos = e.photoThumbs?.length ? e.photoThumbs : (e.photoThumb ? [e.photoThumb] : []);
+        const images = photos.map(dataUrlToApiImage).filter(Boolean);
+        if (!images.length && !e.description) { sinDato++; continue; }
+        const result = await analyzeFoodWithAI({
+          images,
+          descripcion: e.description || "",
+          pesoAprox: e.weightGrams || "",
+          geminiKey: settings.geminiKey,
+        });
+        const patch = {};
+        if (e.fatGrams == null && result.grasas_estimadas_g != null) patch.fatGrams = Math.round(result.grasas_estimadas_g);
+        if (e.proteinGrams == null && result.proteinas_estimadas_g != null) patch.proteinGrams = Math.round(result.proteinas_estimadas_g);
+        if (Object.keys(patch).length) {
+          await updateDoc(doc(db, "users", currentUser.uid, "entries", e.id), patch);
+          ok++;
+        } else {
+          sinDato++;
+        }
+      } catch (err) {
+        fallidas++;
+      }
+      await sleep(350); // margen entre llamadas para no saturar la cuota gratuita de Gemini
+    }
+
+    if (!backfillCancelled) {
+      backfillStatusEl.textContent = `Listo — ${ok} comidas completadas, ${sinDato} sin datos suficientes para estimar, ${fallidas} con error (podés volver a tocar el botón para reintentar esas).`;
+    }
+    toast(`Historial completado: ${ok} comidas actualizadas`);
+  } catch (err) {
+    backfillStatusEl.textContent = "";
+    toast("No se pudo completar el historial: " + err.message, true);
+  } finally {
+    backfillRunning = false;
+    backfillBtn.textContent = BACKFILL_LABEL;
+  }
+});
+
 // ---------- exportar informe (para la nutricionista) ----------
 function csvEscape(v) {
   const s = String(v ?? "");
@@ -602,10 +689,10 @@ function currentMealType() {
 function renderQuickOptions() {
   const mealType = currentMealType();
   const category = CATEGORY_BY_MEAL[mealType] ?? null; // null = "extra": mezcla todo
-  const base = opcionesBaseParaCategoria(category).map((o) => ({ texto: o.texto, kcal: o.kcal, custom: false }));
+  const base = opcionesBaseParaCategoria(category).map((o) => ({ texto: o.texto, kcal: o.kcal, fatGrams: null, proteinGrams: null, custom: false }));
   const propias = customOptions
     .filter((o) => category === null || o.category === category)
-    .map((o) => ({ id: o.id, texto: o.texto, kcal: o.kcal, custom: true }));
+    .map((o) => ({ id: o.id, texto: o.texto, kcal: o.kcal, fatGrams: o.fatGrams ?? null, proteinGrams: o.proteinGrams ?? null, custom: true }));
   quickOptionsCache = [...base, ...propias];
 
   const placeholder = `<option value="">Elegí una comida guardada (opcional)...</option>`;
@@ -623,6 +710,8 @@ quickOptionsEl.addEventListener("change", () => {
   if (!o) return;
   $("#entry-desc").value = o.texto;
   $("#entry-kcal").value = o.kcal;
+  $("#entry-fat").value = o.fatGrams ?? "";
+  $("#entry-protein").value = o.proteinGrams ?? "";
   delete $("#entry-desc").dataset.aiSource;
   qoDeleteBtn.hidden = !o.custom;
 });
@@ -884,16 +973,16 @@ async function analyzeFoodWithAI({ images, descripcion, pesoAprox, geminiKey }) 
 }
 
 // guardar / borrar
-$("#entry-form").addEventListener("submit", async (e) => {
-  e.preventDefault();
+// Arma el payload de la comida a partir del formulario. Devuelve null (y
+// muestra el toast de error) si falta algo obligatorio.
+function buildEntryPayload() {
   const mealType = mealSeg.querySelector("button.active")?.dataset.meal;
   const kcalRaw = $("#entry-kcal").value;
-  if (kcalRaw === "") { toast("Poné un valor de kcal (o analizalo con IA)", true); return; }
+  if (kcalRaw === "") { toast("Poné un valor de kcal (o analizalo con IA)", true); return null; }
   const kcal = Number(kcalRaw);
-
   const fatRaw = $("#entry-fat").value;
   const proteinRaw = $("#entry-protein").value;
-  const payload = {
+  return {
     date: selectedDate,
     mealType,
     description: $("#entry-desc").value.trim(),
@@ -910,18 +999,58 @@ $("#entry-form").addEventListener("submit", async (e) => {
     photoThumb: null, // campo viejo (foto única); lo dejamos en null para no confundir lecturas anteriores
     updatedAt: serverTimestamp(),
   };
+}
 
+// Guarda (crea o actualiza) la comida del día con el payload dado.
+async function saveEntryPayload(payload) {
+  if (editingEntryId) {
+    await updateDoc(doc(db, "users", currentUser.uid, "entries", editingEntryId), payload);
+  } else {
+    payload.createdAt = serverTimestamp();
+    payload.ts = Date.now(); // para ordenar en el cliente sin índice compuesto
+    const newRef = doc(collection(db, "users", currentUser.uid, "entries"));
+    await setDoc(newRef, payload);
+  }
+}
+
+// Agrega la comida (con su kcal/grasas/proteínas) a la lista de comidas
+// guardadas del usuario, para poder volver a elegirla desde el desplegable.
+async function addToMenuOptions(payload) {
+  const category = categoriaParaGuardar(payload.mealType);
+  const newRef = doc(collection(db, "users", currentUser.uid, "menuOptions"));
+  await setDoc(newRef, {
+    texto: payload.description,
+    kcal: payload.kcal,
+    fatGrams: payload.fatGrams ?? null,
+    proteinGrams: payload.proteinGrams ?? null,
+    category,
+    createdAt: serverTimestamp(),
+  });
+}
+
+$("#entry-form").addEventListener("submit", async (e) => {
+  e.preventDefault();
+  const payload = buildEntryPayload();
+  if (!payload) return;
   try {
-    if (editingEntryId) {
-      await updateDoc(doc(db, "users", currentUser.uid, "entries", editingEntryId), payload);
-      toast("Actualizado");
-    } else {
-      payload.createdAt = serverTimestamp();
-      payload.ts = Date.now(); // para ordenar en el cliente sin índice compuesto
-      const newRef = doc(collection(db, "users", currentUser.uid, "entries"));
-      await setDoc(newRef, payload);
-      toast("Guardado");
-    }
+    const wasEditing = !!editingEntryId;
+    await saveEntryPayload(payload);
+    toast(wasEditing ? "Actualizado" : "Guardado");
+    closeSheet();
+  } catch (err) {
+    toast("No se pudo guardar: " + err.message, true);
+  }
+});
+
+$("#save-and-list-btn").addEventListener("click", async () => {
+  const payload = buildEntryPayload();
+  if (!payload) return;
+  if (!payload.description) { toast("Escribí una descripción antes de agregarla a tu lista", true); return; }
+  try {
+    const wasEditing = !!editingEntryId;
+    await saveEntryPayload(payload);
+    await addToMenuOptions(payload);
+    toast(wasEditing ? "Actualizado y agregado a tu lista" : "Guardado y agregado a tu lista");
     closeSheet();
   } catch (err) {
     toast("No se pudo guardar: " + err.message, true);

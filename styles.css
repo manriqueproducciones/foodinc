@@ -313,6 +313,11 @@ nav.bottom-nav button.active { color: var(--green-deep); background: var(--surfa
 }
 
 /* ---------- history ---------- */
+.backfill-card {
+  background: var(--surface); border: 1px solid var(--border); border-radius: 14px; padding: 14px;
+  display: flex; flex-direction: column; gap: 8px; margin-bottom: 14px; box-shadow: var(--shadow);
+}
+.backfill-status { font-size: 0.8rem; color: var(--ink-soft); background: var(--surface-alt); border-radius: 8px; padding: 8px 10px; }
 .history-item {
   background: var(--surface); border: 1px solid var(--border); border-radius: 12px; padding: 12px 14px;
   display: flex; align-items: center; justify-content: space-between; gap: 10px; cursor: pointer; box-shadow: var(--shadow);
