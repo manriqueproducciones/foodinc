@@ -8,11 +8,12 @@ import {
 } from "https://www.gstatic.com/firebasejs/10.7.0/firebase-auth.js";
 import {
   getFirestore, doc, setDoc, updateDoc, deleteDoc, getDoc, getDocs,
-  collection, query, where, orderBy, onSnapshot, serverTimestamp,
+  collection, query, where, orderBy, limit, onSnapshot, serverTimestamp,
 } from "https://www.gstatic.com/firebasejs/10.7.0/firebase-firestore.js";
 
 import { firebaseConfig } from "./firebase-config.js";
 import { OBJETIVO_KCAL, CATEGORY_BY_MEAL, categoriaParaGuardar, opcionesBaseParaCategoria } from "./data/opciones.js";
+import { CALENTAMIENTO, BICI_ID, rutinaPorId } from "./data/rutinas.js";
 
 // ---------- Firebase ----------
 const fbApp = initializeApp(firebaseConfig);
@@ -33,6 +34,11 @@ const TZ = "America/Argentina/Buenos_Aires";
 const GEMINI_MODEL = "gemini-3.5-flash-lite";
 const GEMINI_FALLBACK_MODEL = "gemini-3.1-flash-lite"; // segundo intento si el principal se satura
 const MAX_PHOTOS = 4;
+// METs aproximados para estimar calorías gastadas (fórmula: MET × peso_kg ×
+// horas). Son valores de referencia estándar, no una medición real — sirven
+// como punto de partida editable, no como dato clínico.
+const MET_GYM = 5; // musculación, intensidad moderada-alta
+const MET_BICI = 7; // bici/cardio, intensidad moderada
 
 // ---------- estado ----------
 let currentUser = null;
@@ -42,7 +48,7 @@ let entriesUnsub = null;
 let dayDocUnsub = null;
 let currentEntries = [];
 let currentDayFlags = { water: false, activity: false };
-let currentView = "hoy"; // hoy | historial | ajustes
+let currentView = "hoy"; // hoy | ejercicio | historial | ajustes
 let editingEntryId = null;
 let pendingPhotos = []; // [{ fullBase64, fullMime, thumbBase64 }]
 let historyUnsub = null;
@@ -52,6 +58,22 @@ let lastHistoryDates = []; // fechas (YYYY-MM-DD) del último snapshot de histor
 let lastHistoryByDate = {}; // { fecha: [entries...] } del último snapshot de historial
 let customOptions = []; // opciones propias del usuario (Firestore: users/{uid}/menuOptions)
 let customOptionsUnsub = null;
+
+// ---------- estado: ejercicio y peso ----------
+// Ahora se pueden cargar varias sesiones de ejercicio el mismo día (ej: bici
+// a la mañana + gimnasio a la tarde), igual que ya se pueden cargar varias
+// comidas — por eso es una colección (exerciseSessions) y no un doc único
+// por fecha como al principio.
+let exerciseSessionsUnsub = null;
+let currentExerciseSessions = []; // sesiones del selectedDate
+let editingSessionId = null; // id de la sesión en edición, o null si es nueva
+let sessionDraft = null; // borrador de la sesión que se está editando en la hoja
+let weightDayUnsub = null;
+let currentWeightToday = null; // doc de users/{uid}/weights/{selectedDate}, o null
+let customExercises = []; // ejercicios propios (Firestore: users/{uid}/customExercises)
+let customExercisesUnsub = null;
+let weightHistory = []; // últimos registros de peso, para el mini-historial y para estimar calorías gastadas
+let weightHistoryUnsub = null;
 
 // ---------- helpers de fecha ----------
 function todayISO(d = new Date()) {
@@ -75,9 +97,11 @@ const $ = (sel) => document.querySelector(sel);
 const viewLogin = $("#view-login");
 const appShell = $("#app-shell");
 const viewHoy = $("#view-hoy");
+const viewEjercicio = $("#view-ejercicio");
 const viewHistorial = $("#view-historial");
 const viewAjustes = $("#view-ajustes");
 const dateLabel = $("#date-label");
+const ejDateLabel = $("#ej-date-label");
 const summaryKcal = $("#summary-kcal");
 const summaryPill = $("#summary-pill");
 const gaugeFill = $("#gauge-fill");
@@ -115,6 +139,8 @@ onAuthStateChanged(auth, async (user) => {
     await loadSettings();
     watchDate(selectedDate);
     watchCustomOptions();
+    watchCustomExercises();
+    watchWeightHistory();
     render();
   } else {
     viewLogin.hidden = false;
@@ -123,9 +149,37 @@ onAuthStateChanged(auth, async (user) => {
     if (dayDocUnsub) dayDocUnsub();
     if (historyUnsub) historyUnsub();
     if (customOptionsUnsub) customOptionsUnsub();
+    if (exerciseSessionsUnsub) exerciseSessionsUnsub();
+    if (weightDayUnsub) weightDayUnsub();
+    if (customExercisesUnsub) customExercisesUnsub();
+    if (weightHistoryUnsub) weightHistoryUnsub();
     customOptions = [];
+    customExercises = [];
+    weightHistory = [];
+    currentExerciseSessions = [];
   }
 });
+
+// ---------- ejercicios propios (Firestore: users/{uid}/customExercises) ----------
+function watchCustomExercises() {
+  if (customExercisesUnsub) customExercisesUnsub();
+  const ref = collection(db, "users", currentUser.uid, "customExercises");
+  customExercisesUnsub = onSnapshot(ref, (snap) => {
+    customExercises = snap.docs.map((d) => ({ id: d.id, ...d.data() }));
+    if (currentView === "ejercicio") renderEjercicio();
+  }, (err) => toast("Error leyendo tus ejercicios: " + err.message, true));
+}
+
+// ---------- historial de peso (últimos registros, para el mini-gráfico) ----------
+function watchWeightHistory() {
+  if (weightHistoryUnsub) weightHistoryUnsub();
+  const ref = collection(db, "users", currentUser.uid, "weights");
+  const qWeights = query(ref, orderBy("date", "desc"), limit(14));
+  weightHistoryUnsub = onSnapshot(qWeights, (snap) => {
+    weightHistory = snap.docs.map((d) => ({ id: d.id, ...d.data() }));
+    if (currentView === "ejercicio") renderWeightHistory();
+  }, (err) => toast("Error leyendo tu historial de peso: " + err.message, true));
+}
 
 // ---------- opciones propias (Firestore: users/{uid}/menuOptions) ----------
 function watchCustomOptions() {
@@ -172,8 +226,12 @@ $("#settings-form").addEventListener("submit", async (e) => {
 function watchDate(iso) {
   if (entriesUnsub) entriesUnsub();
   if (dayDocUnsub) dayDocUnsub();
+  if (exerciseSessionsUnsub) exerciseSessionsUnsub();
+  if (weightDayUnsub) weightDayUnsub();
   selectedDate = iso;
-  dateLabel.innerHTML = `${formatLongDate(iso)}${iso === todayISO() ? "" : "<small>toque ▶ para volver a hoy</small>"}`;
+  const dateLabelHTML = `${formatLongDate(iso)}${iso === todayISO() ? "" : "<small>toque ▶ para volver a hoy</small>"}`;
+  dateLabel.innerHTML = dateLabelHTML;
+  ejDateLabel.innerHTML = dateLabelHTML;
 
   // Nota: solo filtramos por igualdad de fecha (sin orderBy de otro campo)
   // para no depender de un índice compuesto en Firestore. Ordenamos en el
@@ -185,6 +243,7 @@ function watchDate(iso) {
       .map((d) => ({ id: d.id, ...d.data() }))
       .sort((a, b) => (a.ts || 0) - (b.ts || 0));
     if (currentView === "hoy") renderHoy();
+    if (currentView === "ejercicio") renderBalance();
   }, (err) => toast("Error leyendo comidas: " + err.message, true));
 
   const dayRef = doc(db, "users", currentUser.uid, "days", iso);
@@ -192,11 +251,32 @@ function watchDate(iso) {
     currentDayFlags = snap.exists() ? { water: !!snap.data().water, activity: !!snap.data().activity } : { water: false, activity: false };
     if (currentView === "hoy") renderChecklist();
   });
+
+  // Varias sesiones de ejercicio pueden compartir la misma fecha (bici +
+  // gimnasio el mismo día), por eso es una query, no un doc único.
+  const exerciseSessionsRef = collection(db, "users", currentUser.uid, "exerciseSessions");
+  const qSessions = query(exerciseSessionsRef, where("date", "==", iso));
+  exerciseSessionsUnsub = onSnapshot(qSessions, (snap) => {
+    currentExerciseSessions = snap.docs
+      .map((d) => ({ id: d.id, ...d.data() }))
+      .sort((a, b) => (a.ts || 0) - (b.ts || 0));
+    if (currentView === "hoy") renderChecklist();
+    if (currentView === "ejercicio") { renderEjercicio(); renderBalance(); }
+  }, (err) => toast("Error leyendo el ejercicio: " + err.message, true));
+
+  const weightRef = doc(db, "users", currentUser.uid, "weights", iso);
+  weightDayUnsub = onSnapshot(weightRef, (snap) => {
+    currentWeightToday = snap.exists() ? snap.data() : null;
+    if (currentView === "ejercicio") renderWeightDay();
+  }, (err) => toast("Error leyendo el peso: " + err.message, true));
 }
 
 $("#date-prev").addEventListener("click", () => watchDate(isoAddDays(selectedDate, -1)));
 $("#date-next").addEventListener("click", () => watchDate(isoAddDays(selectedDate, 1)));
 $("#date-label").addEventListener("click", () => watchDate(todayISO()));
+$("#ej-date-prev").addEventListener("click", () => watchDate(isoAddDays(selectedDate, -1)));
+$("#ej-date-next").addEventListener("click", () => watchDate(isoAddDays(selectedDate, 1)));
+$("#ej-date-label").addEventListener("click", () => watchDate(todayISO()));
 
 // ---------- bottom nav ----------
 document.querySelectorAll("nav.bottom-nav button").forEach((btn) => {
@@ -209,9 +289,11 @@ document.querySelectorAll("nav.bottom-nav button").forEach((btn) => {
 function render() {
   document.querySelectorAll("nav.bottom-nav button").forEach((b) => b.classList.toggle("active", b.dataset.view === currentView));
   viewHoy.hidden = currentView !== "hoy";
+  viewEjercicio.hidden = currentView !== "ejercicio";
   viewHistorial.hidden = currentView !== "historial";
   viewAjustes.hidden = currentView !== "ajustes";
   if (currentView === "hoy") renderHoy();
+  if (currentView === "ejercicio") { renderEjercicio(); renderBalance(); renderWeightDay(); renderWeightHistory(); }
   if (currentView === "historial") renderHistorial();
 }
 
@@ -273,7 +355,7 @@ function renderChecklist() {
     { label: "Proteína en cena", done: proteinDinner },
     { label: carbCount > 1 ? `Carbohidrato x${carbCount} (revisar)` : "Carbohidrato complejo 1x", done: carbCount === 1, warn: carbCount > 1 },
     { label: "2L de agua", done: currentDayFlags.water, toggle: "water" },
-    { label: "Actividad física", done: currentDayFlags.activity, toggle: "activity" },
+    { label: "Actividad física", done: currentExerciseSessions.some((s) => s.done) }, // se marca sola desde la solapa Ejercicio
   ];
 
   checklistEl.innerHTML = items.map((it) => `
@@ -392,6 +474,353 @@ async function deleteEntry(id) {
   if (!confirm("¿Borrar este registro?")) return;
   await deleteDoc(doc(db, "users", currentUser.uid, "entries", id));
   toast("Borrado");
+}
+
+// ---------- ejercicio: sesiones del día ----------
+// Varias sesiones pueden compartir la misma fecha (bici + gimnasio el mismo
+// día). Cada una se carga/edita en su propia hoja (ex-sheet), con un
+// borrador local (sessionDraft) que recién se guarda en Firestore al tocar
+// "Guardar sesión" — así cambiar de rutina o tildar ejercicios mientras se
+// arma la sesión no genera escrituras intermedias.
+const exSheetBackdrop = $("#ex-sheet-backdrop");
+const exSheetTitle = $("#ex-sheet-title");
+const ejRoutineSeg = $("#ej-routine-seg");
+const ejExerciseListEl = $("#ej-exercise-list");
+const ejAddExerciseWrap = $("#ej-add-exercise-wrap");
+const ejAddExerciseRow = $("#ej-add-exercise-row");
+const ejAddExerciseForm = $("#ej-add-exercise-form");
+const ejNewExerciseLabel = $("#ej-new-exercise-label");
+const ejNewExerciseDetalle = $("#ej-new-exercise-detalle");
+const ejMinutesInput = $("#ej-minutes");
+const ejCaloriesInput = $("#ej-calories");
+const ejCaloriesHint = $("#ej-calories-hint");
+const ejSessionDoneBtn = $("#ej-session-done-btn");
+const ejDeleteSessionBtn = $("#ej-delete-session-btn");
+const ejSessionsListEl = $("#ej-sessions-list");
+
+function nombreSesion(routineId) {
+  if (routineId === BICI_ID) return "🚲 Bici / Cardio";
+  return rutinaPorId(routineId)?.nombre || routineId;
+}
+
+// Estimación simple por MET: kcal ≈ MET × peso_kg × horas. Usa el último
+// peso cargado en la solapa Ejercicio; si todavía no cargaste ninguno,
+// devuelve null (no se puede estimar sin saber cuánto pesás).
+function estimateCalories(routineId, minutes) {
+  const pesoKg = weightHistory[0]?.weightKg;
+  if (!pesoKg || !minutes) return null;
+  const met = routineId === BICI_ID ? MET_BICI : MET_GYM;
+  return Math.round(met * pesoKg * (minutes / 60));
+}
+
+function checkItemHTML(id, label, isChecked, custom = false) {
+  return `
+    <div class="check-item ej-check-item ${isChecked ? "done" : ""}" data-ex-toggle="${id}">
+      <span class="dot"></span><span class="ej-check-label">${escapeHTML(label)}</span>${custom ? `<span class="ej-del" data-ex-del="${id}" title="Borrar">✕</span>` : ""}
+    </div>
+  `;
+}
+
+function openExerciseSheet(session) {
+  editingSessionId = session ? session.id : null;
+  sessionDraft = session
+    ? { routineId: session.routineId, checked: { ...(session.checked || {}) }, minutes: session.minutes ?? "", caloriesBurned: session.caloriesBurned ?? "", done: !!session.done }
+    : { routineId: null, checked: {}, minutes: "", caloriesBurned: "", done: false };
+
+  exSheetTitle.textContent = session ? "Editar sesión" : "Agregar sesión";
+  ejDeleteSessionBtn.hidden = !session;
+  ejMinutesInput.value = sessionDraft.minutes;
+  ejCaloriesInput.value = sessionDraft.caloriesBurned;
+  ejCaloriesHint.textContent = "";
+  renderSessionSheet();
+  exSheetBackdrop.hidden = false;
+}
+
+function closeExerciseSheet() {
+  exSheetBackdrop.hidden = true;
+  editingSessionId = null;
+  sessionDraft = null;
+  ejAddExerciseForm.hidden = true;
+  ejAddExerciseRow.hidden = false;
+}
+
+$("#ej-add-session-btn").addEventListener("click", () => openExerciseSheet(null));
+$("#ex-sheet-close").addEventListener("click", closeExerciseSheet);
+exSheetBackdrop.addEventListener("click", (e) => { if (e.target === exSheetBackdrop) closeExerciseSheet(); });
+
+// Pinta el estado actual del borrador: selector de rutina, checklist de
+// ejercicios (si aplica), y el botón de "sesión completa".
+function renderSessionSheet() {
+  if (!sessionDraft) return;
+  const { routineId } = sessionDraft;
+  const esBici = routineId === BICI_ID;
+
+  ejRoutineSeg.querySelectorAll("button").forEach((b) => b.classList.toggle("active", b.dataset.routine === routineId));
+
+  ejSessionDoneBtn.disabled = !routineId;
+  ejSessionDoneBtn.textContent = sessionDraft.done ? "↩️ Desmarcar sesión" : "✅ Marcar sesión completa";
+
+  if (!routineId) {
+    ejExerciseListEl.innerHTML = `<div class="empty-state" style="padding:16px;">Elegí arriba qué hiciste.</div>`;
+    ejAddExerciseWrap.hidden = true;
+    return;
+  }
+  if (esBici) {
+    ejExerciseListEl.innerHTML = "";
+    ejAddExerciseWrap.hidden = true;
+    return;
+  }
+
+  const rutina = rutinaPorId(routineId);
+  if (!rutina) { ejExerciseListEl.innerHTML = ""; ejAddExerciseWrap.hidden = true; return; }
+  const checked = sessionDraft.checked || {};
+  const propios = customExercises.filter((e) => e.routineId === routineId);
+
+  let html = checkItemHTML(CALENTAMIENTO.id, `${CALENTAMIENTO.label} · ${CALENTAMIENTO.detalle}`, checked[CALENTAMIENTO.id]);
+  rutina.grupos.forEach((g) => {
+    html += `<div class="ej-group-label">${escapeHTML(g.nombre)}</div>`;
+    g.ejercicios.forEach((ex) => {
+      html += checkItemHTML(ex.id, `${ex.label} · ${ex.detalle}`, checked[ex.id]);
+    });
+  });
+  if (propios.length) {
+    html += `<div class="ej-group-label">Agregados por vos</div>`;
+    propios.forEach((ex) => {
+      html += checkItemHTML(ex.id, `${ex.label}${ex.detalle ? " · " + ex.detalle : ""}`, checked[ex.id], true);
+    });
+  }
+  ejExerciseListEl.innerHTML = html;
+  ejAddExerciseWrap.hidden = false;
+
+  ejExerciseListEl.querySelectorAll("[data-ex-toggle]").forEach((el) => {
+    el.addEventListener("click", (e) => {
+      if (e.target.closest("[data-ex-del]")) return;
+      const exId = el.dataset.exToggle;
+      sessionDraft.checked[exId] = !sessionDraft.checked[exId];
+      renderSessionSheet();
+    });
+  });
+  ejExerciseListEl.querySelectorAll("[data-ex-del]").forEach((btn) => {
+    btn.addEventListener("click", async (e) => {
+      e.stopPropagation();
+      if (!confirm("¿Borrar este ejercicio de la rutina?")) return;
+      await deleteDoc(doc(db, "users", currentUser.uid, "customExercises", btn.dataset.exDel));
+    });
+  });
+}
+
+ejRoutineSeg.addEventListener("click", (e) => {
+  const btn = e.target.closest("button[data-routine]");
+  if (!btn || !sessionDraft) return;
+  const routineId = btn.dataset.routine;
+  if (routineId === sessionDraft.routineId) return;
+  // cambiar de rutina dentro de la misma sesión (todavía sin guardar)
+  // resetea los tildes — es otra actividad.
+  sessionDraft.routineId = routineId;
+  sessionDraft.checked = {};
+  renderSessionSheet();
+});
+
+ejSessionDoneBtn.addEventListener("click", () => {
+  if (!sessionDraft?.routineId) return;
+  sessionDraft.done = !sessionDraft.done;
+  renderSessionSheet();
+});
+
+ejMinutesInput.addEventListener("change", () => {
+  if (!sessionDraft) return;
+  const minutes = ejMinutesInput.value !== "" ? Number(ejMinutesInput.value) : null;
+  sessionDraft.minutes = minutes ?? "";
+  if (ejCaloriesInput.value === "" && sessionDraft.routineId) {
+    const estimada = estimateCalories(sessionDraft.routineId, minutes);
+    if (estimada != null) {
+      ejCaloriesInput.value = estimada;
+      sessionDraft.caloriesBurned = estimada;
+      ejCaloriesHint.textContent = "Estimado según tu peso y los minutos — podés ajustarlo a mano.";
+    } else {
+      ejCaloriesHint.textContent = "Cargá tu peso en la sección de abajo para que la app te sugiera un estimado.";
+    }
+  }
+});
+ejCaloriesInput.addEventListener("change", () => {
+  if (!sessionDraft) return;
+  sessionDraft.caloriesBurned = ejCaloriesInput.value !== "" ? Number(ejCaloriesInput.value) : "";
+  ejCaloriesHint.textContent = "";
+});
+
+ejAddExerciseRow.addEventListener("click", (e) => {
+  if (!e.target.closest("#ej-add-exercise-btn")) return;
+  ejAddExerciseRow.hidden = true;
+  ejAddExerciseForm.hidden = false;
+  ejNewExerciseLabel.focus();
+});
+$("#ej-cancel-exercise-btn").addEventListener("click", () => {
+  ejAddExerciseForm.hidden = true;
+  ejAddExerciseRow.hidden = false;
+  ejNewExerciseLabel.value = "";
+  ejNewExerciseDetalle.value = "";
+});
+$("#ej-save-exercise-btn").addEventListener("click", async () => {
+  const label = ejNewExerciseLabel.value.trim();
+  const detalle = ejNewExerciseDetalle.value.trim();
+  const routineId = sessionDraft?.routineId;
+  if (!routineId || routineId === BICI_ID) return;
+  if (!label) { toast("Escribí el nombre del ejercicio", true); return; }
+  try {
+    const newRef = doc(collection(db, "users", currentUser.uid, "customExercises"));
+    await setDoc(newRef, { routineId, label, detalle, createdAt: serverTimestamp() });
+    ejNewExerciseLabel.value = "";
+    ejNewExerciseDetalle.value = "";
+    ejAddExerciseForm.hidden = true;
+    ejAddExerciseRow.hidden = false;
+    toast("Ejercicio agregado a la rutina");
+  } catch (err) {
+    toast("No se pudo guardar: " + err.message, true);
+  }
+});
+
+$("#ej-save-session-btn").addEventListener("click", async () => {
+  if (!sessionDraft?.routineId) { toast("Elegí qué hiciste antes de guardar", true); return; }
+  const payload = {
+    date: selectedDate,
+    routineId: sessionDraft.routineId,
+    checked: sessionDraft.checked || {},
+    minutes: sessionDraft.minutes !== "" ? Number(sessionDraft.minutes) : null,
+    caloriesBurned: sessionDraft.caloriesBurned !== "" ? Number(sessionDraft.caloriesBurned) : null,
+    done: !!sessionDraft.done,
+    updatedAt: serverTimestamp(),
+  };
+  try {
+    if (editingSessionId) {
+      await updateDoc(doc(db, "users", currentUser.uid, "exerciseSessions", editingSessionId), payload);
+      toast("Sesión actualizada");
+    } else {
+      payload.createdAt = serverTimestamp();
+      payload.ts = Date.now();
+      const newRef = doc(collection(db, "users", currentUser.uid, "exerciseSessions"));
+      await setDoc(newRef, payload);
+      toast("Sesión guardada");
+    }
+    closeExerciseSheet();
+  } catch (err) {
+    toast("No se pudo guardar: " + err.message, true);
+  }
+});
+
+ejDeleteSessionBtn.addEventListener("click", async () => {
+  if (!editingSessionId) return;
+  if (!confirm("¿Borrar esta sesión?")) return;
+  await deleteDoc(doc(db, "users", currentUser.uid, "exerciseSessions", editingSessionId));
+  toast("Sesión borrada");
+  closeExerciseSheet();
+});
+
+function sessionCardHTML(s) {
+  const icon = s.routineId === BICI_ID ? "🚲" : "💪";
+  const metaParts = [];
+  if (s.minutes) metaParts.push(`${s.minutes} min`);
+  if (s.caloriesBurned != null) metaParts.push(`${s.caloriesBurned} kcal gastadas`);
+  if (s.routineId !== BICI_ID) {
+    const totalEj = exerciseListLength(s.routineId);
+    const marcados = Object.values(s.checked || {}).filter(Boolean).length;
+    if (totalEj) metaParts.push(`${marcados}/${totalEj} ejercicios`);
+  }
+  return `
+    <div class="entry-card">
+      <div class="thumb-wrap"><div class="thumb-placeholder">${icon}</div></div>
+      <div class="entry-body">
+        <div class="desc">${escapeHTML(nombreSesion(s.routineId))}</div>
+        <div class="meta">${metaParts.join(" · ")}</div>
+        ${s.done ? `<div class="tags"><span class="tag">completa</span></div>` : ""}
+      </div>
+      <div class="entry-actions">
+        <button data-ex-edit="${s.id}" title="Editar">✏️</button>
+        <button data-ex-del-session="${s.id}" title="Borrar">🗑️</button>
+      </div>
+    </div>
+  `;
+}
+
+function exerciseListLength(routineId) {
+  const rutina = rutinaPorId(routineId);
+  if (!rutina) return 0;
+  const propios = customExercises.filter((e) => e.routineId === routineId).length;
+  const fijos = rutina.grupos.reduce((s, g) => s + g.ejercicios.length, 0) + 1; // +1 por el calentamiento
+  return fijos + propios;
+}
+
+function renderEjercicio() {
+  if (!currentExerciseSessions.length) {
+    ejSessionsListEl.innerHTML = `<div class="empty-state">Todavía no cargaste nada este día.<br>Tocá "+ Agregar sesión".</div>`;
+    return;
+  }
+  ejSessionsListEl.innerHTML = currentExerciseSessions.map(sessionCardHTML).join("");
+  ejSessionsListEl.querySelectorAll("[data-ex-edit]").forEach((btn) => {
+    btn.addEventListener("click", () => openExerciseSheet(currentExerciseSessions.find((s) => s.id === btn.dataset.exEdit)));
+  });
+  ejSessionsListEl.querySelectorAll("[data-ex-del-session]").forEach((btn) => {
+    btn.addEventListener("click", async () => {
+      if (!confirm("¿Borrar esta sesión?")) return;
+      await deleteDoc(doc(db, "users", currentUser.uid, "exerciseSessions", btn.dataset.exDelSession));
+    });
+  });
+}
+
+// Balance simple e informativo: comida cargada menos lo estimado en
+// ejercicio. No pretende ser un déficit calórico clínico (no incluye el
+// metabolismo basal) — es solo una referencia rápida, separada a propósito
+// de las estadísticas de comida.
+function renderBalance() {
+  const consumidas = currentEntries.reduce((s, e) => s + (Number(e.kcal) || 0), 0);
+  const gastadas = currentExerciseSessions.reduce((s, ses) => s + (Number(ses.caloriesBurned) || 0), 0);
+  const balancePillEl = $("#ej-balance-pill");
+  const balanceDetailEl = $("#ej-balance-detail");
+  if (!consumidas && !gastadas) {
+    balancePillEl.textContent = "Sin datos todavía";
+    balancePillEl.className = "status-pill empty";
+    balanceDetailEl.innerHTML = "";
+    return;
+  }
+  const diff = consumidas - gastadas;
+  balancePillEl.textContent = `${diff >= 0 ? "+" : ""}${diff} kcal`;
+  balancePillEl.className = "status-pill " + (gastadas === 0 ? "empty" : diff < 0 ? "warn" : "ok");
+  balanceDetailEl.innerHTML = `
+    <div class="ej-balance-row"><span>Comida</span><b class="num">${consumidas} kcal</b></div>
+    <div class="ej-balance-row"><span>Ejercicio</span><b class="num">−${gastadas} kcal</b></div>
+  `;
+}
+
+// ---------- peso corporal ----------
+const weightTodayInput = $("#weight-today");
+const weightHistoryEl = $("#weight-history");
+
+function renderWeightDay() {
+  weightTodayInput.value = currentWeightToday?.weightKg ?? "";
+}
+
+$("#save-weight-btn").addEventListener("click", async () => {
+  const raw = weightTodayInput.value;
+  if (raw === "") { toast("Ingresá un peso", true); return; }
+  const kg = Number(raw);
+  if (!kg || kg <= 0) { toast("Ese peso no parece válido", true); return; }
+  try {
+    const ref = doc(db, "users", currentUser.uid, "weights", selectedDate);
+    await setDoc(ref, { date: selectedDate, weightKg: kg, updatedAt: serverTimestamp() }, { merge: true });
+    toast("Peso guardado");
+  } catch (err) {
+    toast("No se pudo guardar: " + err.message, true);
+  }
+});
+
+function renderWeightHistory() {
+  if (!weightHistory.length) {
+    weightHistoryEl.innerHTML = `<p class="hint">Todavía no registraste tu peso.</p>`;
+    return;
+  }
+  const ordenado = [...weightHistory].sort((a, b) => (a.date < b.date ? 1 : -1));
+  weightHistoryEl.innerHTML = ordenado.map((w) => `
+    <div class="weight-row"><span>${formatLongDate(w.date)}</span><b class="num">${w.weightKg} kg</b></div>
+  `).join("");
 }
 
 // ---------- historial ----------

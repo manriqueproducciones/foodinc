@@ -59,6 +59,40 @@
           <div id="entries-list"></div>
         </section>
 
+        <!-- ---------- vista: ejercicio ---------- -->
+        <section id="view-ejercicio" hidden>
+          <div class="date-switch">
+            <button id="ej-date-prev" aria-label="Día anterior">‹</button>
+            <div class="date-label" id="ej-date-label">Hoy</div>
+            <button id="ej-date-next" aria-label="Día siguiente">›</button>
+          </div>
+
+          <div class="summary-card" id="ej-balance-card">
+            <div class="summary-top" style="align-items:center;">
+              <div style="font-weight:600;font-size:1rem;">Balance de hoy</div>
+              <div class="status-pill empty" id="ej-balance-pill"></div>
+            </div>
+            <div class="ej-balance-detail" id="ej-balance-detail"></div>
+            <p class="hint">Comida cargada menos lo estimado en ejercicio — una referencia rápida, separada de las estadísticas de comida. No incluye tu gasto metabólico en reposo, así que no es un déficit calórico clínico.</p>
+          </div>
+
+          <div class="ej-sessions-head">
+            <h2 style="font-size:1.05rem;margin:0;">Sesiones de hoy</h2>
+            <button type="button" class="photo-btn" id="ej-add-session-btn">+ Agregar sesión</button>
+          </div>
+          <div id="ej-sessions-list"></div>
+
+          <div class="settings-block">
+            <h3>Peso corporal</h3>
+            <p class="hint">Registrá tu peso de este día. También se usa para estimar las calorías gastadas en cada sesión.</p>
+            <div class="range-row">
+              <div class="field"><label for="weight-today">Peso (kg)</label><input type="number" id="weight-today" min="0" step="0.1" placeholder="70.5"></div>
+            </div>
+            <button type="button" class="primary-btn" id="save-weight-btn">Guardar peso</button>
+            <div id="weight-history"></div>
+          </div>
+        </section>
+
         <!-- ---------- vista: historial ---------- -->
         <section id="view-historial" hidden>
           <h2 style="font-size:1.1rem;margin-bottom:2px;">Historial</h2>
@@ -105,6 +139,7 @@
 
       <nav class="bottom-nav">
         <button data-view="hoy" class="active"><span class="ic">📅</span>Hoy</button>
+        <button data-view="ejercicio"><span class="ic">💪</span>Ejercicio</button>
         <button data-view="historial"><span class="ic">📊</span>Historial</button>
         <button data-view="ajustes"><span class="ic">⚙️</span>Ajustes</button>
       </nav>
@@ -190,6 +225,55 @@
         <button type="button" class="photo-btn" id="save-and-list-btn">+ Guardar y agregar a mi lista</button>
         <button type="button" class="ghost-btn" id="delete-entry-btn" hidden>Borrar este registro</button>
       </form>
+    </div>
+  </div>
+
+  <!-- ---------- sheet: agregar/editar sesión de ejercicio ---------- -->
+  <div class="sheet-backdrop" id="ex-sheet-backdrop" hidden>
+    <div class="sheet" role="dialog" aria-modal="true">
+      <div class="sheet-handle"></div>
+      <div class="sheet-head">
+        <h2 id="ex-sheet-title">Agregar sesión</h2>
+        <button class="icon-btn" id="ex-sheet-close" aria-label="Cerrar">✕</button>
+      </div>
+
+      <div style="display:flex;flex-direction:column;gap:14px;">
+        <div class="field">
+          <label>Qué hiciste</label>
+          <div class="seg" id="ej-routine-seg">
+            <button type="button" data-routine="bici">🚲 Bici</button>
+            <button type="button" data-routine="rutina1">Pecho / Tríceps</button>
+            <button type="button" data-routine="rutina2">Espalda / Bíceps</button>
+            <button type="button" data-routine="rutina3">Piernas</button>
+            <button type="button" data-routine="rutina4">Hombros</button>
+          </div>
+        </div>
+
+        <div id="ej-exercise-list"></div>
+        <div id="ej-add-exercise-wrap" hidden>
+          <div class="qo-add-row" id="ej-add-exercise-row">
+            <button type="button" class="photo-btn" id="ej-add-exercise-btn">+ Agregar un ejercicio a esta rutina</button>
+          </div>
+          <div class="qo-add-form" id="ej-add-exercise-form" hidden>
+            <input type="text" id="ej-new-exercise-label" placeholder="Ej: Peck Deck">
+            <input type="text" id="ej-new-exercise-detalle" placeholder="Series x repeticiones (ej: 3 x 12)">
+            <div style="display:flex; gap:8px;">
+              <button type="button" class="primary-btn" id="ej-save-exercise-btn" style="flex:1; padding:10px;">Guardar en la rutina</button>
+              <button type="button" class="ghost-btn" id="ej-cancel-exercise-btn">Cancelar</button>
+            </div>
+          </div>
+        </div>
+
+        <div class="range-row">
+          <div class="field"><label for="ej-minutes">Duración (min)</label><input type="number" id="ej-minutes" min="0" step="1" placeholder="45"></div>
+          <div class="field"><label for="ej-calories">Kcal gastadas</label><input type="number" id="ej-calories" min="0" step="5" placeholder="250"></div>
+        </div>
+        <p class="hint" id="ej-calories-hint"></p>
+
+        <button type="button" class="photo-btn" id="ej-session-done-btn" disabled>✅ Marcar sesión completa</button>
+        <button type="button" class="primary-btn" id="ej-save-session-btn">Guardar sesión</button>
+        <button type="button" class="ghost-btn" id="ej-delete-session-btn" hidden>Borrar esta sesión</button>
+      </div>
     </div>
   </div>
 

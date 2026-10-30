@@ -131,6 +131,32 @@ main { flex: 1; padding: 16px; padding-bottom: 110px; display: flex; flex-direct
 .check-item.done .dot { background: var(--green); }
 .check-item.warn-item { color: var(--terracota); background: var(--terracota-soft); }
 
+/* ---------- ejercicio ---------- */
+.ej-group-label {
+  font-size: 0.78rem; text-transform: uppercase; letter-spacing: 0.06em; color: var(--ink-faint); font-weight: 600;
+  margin: 8px 0 2px;
+}
+.ej-check-item {
+  width: 100%; display: flex; align-items: center; gap: 8px; font-size: 0.85rem; padding: 10px 11px; margin-bottom: 6px;
+}
+.ej-check-label { flex: 1; }
+.ej-del {
+  color: var(--ink-faint); font-weight: 700; padding: 2px 4px; border-radius: 50%; line-height: 1; flex: none;
+}
+.ej-del:hover { color: var(--danger); }
+.weight-row {
+  display: flex; align-items: center; justify-content: space-between; font-size: 0.85rem; color: var(--ink-soft);
+  padding: 7px 2px; border-bottom: 1px solid var(--border);
+}
+.weight-row:last-child { border-bottom: none; }
+.weight-row b { color: var(--ink); font-family: 'IBM Plex Mono', monospace; }
+
+.ej-balance-detail { display: flex; flex-direction: column; gap: 4px; }
+.ej-balance-row { display: flex; align-items: center; justify-content: space-between; font-size: 0.85rem; color: var(--ink-soft); }
+.ej-balance-row b { color: var(--ink); font-family: 'IBM Plex Mono', monospace; }
+.ej-sessions-head { display: flex; align-items: center; justify-content: space-between; gap: 10px; margin: 18px 0 10px; }
+.ej-sessions-head .photo-btn { flex: none; padding: 8px 12px; font-size: 0.8rem; }
+
 /* ---------- entries list ---------- */
 .meal-group { display: flex; flex-direction: column; gap: 8px; }
 .meal-group h2 {
@@ -192,13 +218,13 @@ nav.bottom-nav {
   position: fixed; left: 0; right: 0; bottom: 0; z-index: 15;
   background: var(--surface); border-top: 1px solid var(--border);
   padding: 8px 12px calc(8px + env(safe-area-inset-bottom, 0px));
-  display: flex; justify-content: center; gap: 6px;
+  display: flex; justify-content: center; gap: 4px;
   max-width: 560px; margin: 0 auto;
 }
 nav.bottom-nav button {
-  flex: 1; max-width: 140px; background: none; border: none; cursor: pointer;
-  display: flex; flex-direction: column; align-items: center; gap: 2px; padding: 6px; border-radius: 10px;
-  color: var(--ink-faint); font-size: 0.68rem; font-weight: 600;
+  flex: 1; max-width: 120px; background: none; border: none; cursor: pointer;
+  display: flex; flex-direction: column; align-items: center; gap: 2px; padding: 6px 2px; border-radius: 10px;
+  color: var(--ink-faint); font-size: 0.64rem; font-weight: 600;
 }
 nav.bottom-nav button .ic { font-size: 1.2rem; }
 nav.bottom-nav button.active { color: var(--green-deep); background: var(--surface-alt); }
