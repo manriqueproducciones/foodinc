@@ -113,6 +113,22 @@ export const CALENTAMIENTO = { id: "calentamiento-bici", label: "Aeróbico inici
 export const BICI_ID = "bici";
 export const BICI_NOMBRE = "Bici / Cardio";
 
+// Actividades de cardio/deporte: no tienen ejercicios tildables como las
+// rutinas de gimnasio, solo duración + calorías gastadas. Cada una tiene su
+// propio MET aproximado (intensidad) para la estimación automática. Si en
+// algún momento hay que agregar otro deporte, va una línea más acá.
+export const ACTIVIDADES_CARDIO = [
+  { id: "bici", nombre: "Bici / Cardio", nombreCorto: "Bici", icon: "🚲", met: 7 },
+  { id: "caminata", nombre: "Caminata", nombreCorto: "Caminata", icon: "🚶", met: 3.5 },
+  { id: "padel", nombre: "Pádel", nombreCorto: "Pádel", icon: "🎾", met: 6 },
+  { id: "futbol5", nombre: "Fútbol 5", nombreCorto: "Fútbol 5", icon: "⚽", met: 7.5 },
+  { id: "natacion", nombre: "Natación", nombreCorto: "Natación", icon: "🏊", met: 8 },
+];
+
+export function cardioPorId(id) {
+  return ACTIVIDADES_CARDIO.find((a) => a.id === id) || null;
+}
+
 export function todasLasRutinas() {
   return RUTINAS;
 }
