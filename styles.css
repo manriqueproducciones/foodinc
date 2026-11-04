@@ -309,6 +309,10 @@ nav.bottom-nav button.active { color: var(--green-deep); background: var(--surfa
 }
 .primary-btn[disabled] { opacity: 0.5; }
 .ghost-btn { background: none; border: none; color: var(--danger); font-size: 0.85rem; cursor: pointer; padding: 8px; }
+.link-btn {
+  background: var(--surface-alt); border: 1px solid var(--border); border-radius: 10px; padding: 8px 10px;
+  color: var(--ink-soft); font-size: 0.78rem; font-weight: 600; cursor: pointer; white-space: nowrap;
+}
 
 .spinner {
   width: 15px; height: 15px; border-radius: 50%; border: 2px solid rgba(255,255,255,0.4); border-top-color: currentColor;
@@ -346,12 +350,38 @@ nav.bottom-nav button.active { color: var(--green-deep); background: var(--surfa
 .backfill-status { font-size: 0.8rem; color: var(--ink-soft); background: var(--surface-alt); border-radius: 8px; padding: 8px 10px; }
 .history-item {
   background: var(--surface); border: 1px solid var(--border); border-radius: 12px; padding: 12px 14px;
-  display: flex; align-items: center; justify-content: space-between; gap: 10px; cursor: pointer; box-shadow: var(--shadow);
+  display: flex; flex-direction: column; gap: 8px; cursor: pointer; box-shadow: var(--shadow);
 }
+.history-item-top { display: flex; align-items: center; justify-content: space-between; gap: 10px; }
 .history-item .hd { display: flex; flex-direction: column; }
 .history-item .hd b { font-size: 0.9rem; }
 .history-item .hd span { font-size: 0.74rem; color: var(--ink-faint); }
 .history-item .hkcal { font-family: 'IBM Plex Mono', monospace; font-weight: 600; }
+.history-balance-row {
+  display: flex; align-items: center; justify-content: space-between; gap: 8px; flex-wrap: wrap;
+  font-size: 0.74rem; color: var(--ink-faint); border-top: 1px solid var(--border); padding-top: 7px;
+}
+.history-balance-row b { color: var(--ink); font-family: 'IBM Plex Mono', monospace; }
+
+/* ---------- editor de rutinas ---------- */
+.routine-row {
+  display: flex; align-items: center; justify-content: space-between; gap: 10px;
+  background: var(--surface); border: 1px solid var(--border); border-radius: 12px; padding: 12px 14px;
+  cursor: pointer; box-shadow: var(--shadow);
+}
+.routine-row-name { font-size: 0.9rem; color: var(--ink); flex: 1; }
+.routine-row-actions { display: flex; gap: 10px; flex: none; }
+.routine-row-actions button { background: none; border: none; color: var(--ink-faint); font-size: 0.95rem; cursor: pointer; padding: 3px; }
+.routine-group-block {
+  background: var(--surface); border: 1px solid var(--border); border-radius: 12px; padding: 12px 14px;
+  display: flex; flex-direction: column; gap: 6px; box-shadow: var(--shadow);
+}
+.routine-group-head { display: flex; align-items: center; justify-content: space-between; gap: 10px; }
+.routine-group-head b { font-size: 0.85rem; }
+.routine-ex-row {
+  display: flex; align-items: center; justify-content: space-between; gap: 10px; font-size: 0.83rem;
+  color: var(--ink-soft); padding: 6px 2px; border-top: 1px solid var(--border);
+}
 
 .settings-block { background: var(--surface); border: 1px solid var(--border); border-radius: 14px; padding: 16px; display: flex; flex-direction: column; gap: 12px; box-shadow: var(--shadow); }
 .settings-block h3 { font-size: 0.9rem; font-weight: 600; }

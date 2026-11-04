@@ -7,13 +7,13 @@ import {
   getAuth, GoogleAuthProvider, signInWithPopup, signOut, onAuthStateChanged,
 } from "https://www.gstatic.com/firebasejs/10.7.0/firebase-auth.js";
 import {
-  getFirestore, doc, setDoc, updateDoc, deleteDoc, getDoc, getDocs,
+  getFirestore, doc, setDoc, updateDoc, deleteDoc, getDoc, getDocs, writeBatch,
   collection, query, where, orderBy, limit, onSnapshot, serverTimestamp,
 } from "https://www.gstatic.com/firebasejs/10.7.0/firebase-firestore.js";
 
 import { firebaseConfig } from "./firebase-config.js";
 import { OBJETIVO_KCAL, CATEGORY_BY_MEAL, categoriaParaGuardar, opcionesBaseParaCategoria } from "./data/opciones.js";
-import { CALENTAMIENTO, BICI_ID, rutinaPorId } from "./data/rutinas.js";
+import { CALENTAMIENTO, ACTIVIDADES_CARDIO, cardioPorId, RUTINAS as SEED_RUTINAS } from "./data/rutinas.js";
 
 // ---------- Firebase ----------
 const fbApp = initializeApp(firebaseConfig);
@@ -34,11 +34,12 @@ const TZ = "America/Argentina/Buenos_Aires";
 const GEMINI_MODEL = "gemini-3.5-flash-lite";
 const GEMINI_FALLBACK_MODEL = "gemini-3.1-flash-lite"; // segundo intento si el principal se satura
 const MAX_PHOTOS = 4;
-// METs aproximados para estimar calorías gastadas (fórmula: MET × peso_kg ×
-// horas). Son valores de referencia estándar, no una medición real — sirven
-// como punto de partida editable, no como dato clínico.
+// MET aproximado para estimar calorías gastadas en gimnasio (fórmula: MET ×
+// peso_kg × horas). El de cada actividad cardio (bici, caminata, pádel, etc.)
+// vive en data/rutinas.js, junto a esa actividad. Son valores de referencia
+// estándar, no una medición real — sirven como punto de partida editable, no
+// como dato clínico.
 const MET_GYM = 5; // musculación, intensidad moderada-alta
-const MET_BICI = 7; // bici/cardio, intensidad moderada
 
 // ---------- estado ----------
 let currentUser = null;
@@ -56,6 +57,8 @@ let historyRangeDays = 90; // 0 = todo
 let historyRangeLabel = "90 días";
 let lastHistoryDates = []; // fechas (YYYY-MM-DD) del último snapshot de historial
 let lastHistoryByDate = {}; // { fecha: [entries...] } del último snapshot de historial
+let historyExerciseUnsub = null;
+let lastHistoryExerciseByDate = {}; // { fecha: kcal gastadas } del último snapshot de ejercicio en el historial
 let customOptions = []; // opciones propias del usuario (Firestore: users/{uid}/menuOptions)
 let customOptionsUnsub = null;
 
@@ -70,10 +73,19 @@ let editingSessionId = null; // id de la sesión en edición, o null si es nueva
 let sessionDraft = null; // borrador de la sesión que se está editando en la hoja
 let weightDayUnsub = null;
 let currentWeightToday = null; // doc de users/{uid}/weights/{selectedDate}, o null
-let customExercises = []; // ejercicios propios (Firestore: users/{uid}/customExercises)
-let customExercisesUnsub = null;
 let weightHistory = []; // últimos registros de peso, para el mini-historial y para estimar calorías gastadas
 let weightHistoryUnsub = null;
+
+// ---------- estado: rutinas propias (Firestore: users/{uid}/routines) ----------
+// Las rutinas (gimnasio) ya no están fijas en el código: viven en Firestore,
+// así se pueden crear rutinas nuevas y agregar/editar/borrar segmentos y
+// ejercicios de las que ya existen. data/rutinas.js solo se usa una vez, como
+// semilla, la primera vez que un usuario abre la pestaña Ejercicio.
+let userRoutines = []; // [{id, nombre, nombreCorto, orden, grupos:[{id, nombre, ejercicios:[{id,label,detalle}], esAgregados?}]}]
+let routinesUnsub = null;
+let routineEditorOpen = false;
+let routineEditorView = "list"; // list | detail
+let routineEditorTargetId = null;
 
 // ---------- helpers de fecha ----------
 function todayISO(d = new Date()) {
@@ -90,6 +102,11 @@ function formatLongDate(iso) {
   const dt = new Date(Date.UTC(y, m - 1, d, 12));
   const s = new Intl.DateTimeFormat("es-AR", { weekday: "long", day: "numeric", month: "long", timeZone: "UTC" }).format(dt);
   return s.charAt(0).toUpperCase() + s.slice(1);
+}
+
+// id corto y único para segmentos/ejercicios nuevos que se agregan desde la app.
+function genId(prefix) {
+  return `${prefix}-${Date.now().toString(36)}${Math.random().toString(36).slice(2, 7)}`;
 }
 
 // ---------- DOM refs ----------
@@ -113,6 +130,7 @@ const historyListEl = $("#history-list");
 const historySummaryEl = $("#history-summary");
 const sheetBackdrop = $("#sheet-backdrop");
 const toastEl = $("#toast");
+const routineEditorBackdrop = $("#routine-editor-backdrop");
 
 // ---------- toast ----------
 let toastTimer = null;
@@ -137,9 +155,10 @@ onAuthStateChanged(auth, async (user) => {
     viewLogin.hidden = true;
     appShell.hidden = false;
     await loadSettings();
+    await ensureRoutinesSeeded();
+    watchRoutines();
     watchDate(selectedDate);
     watchCustomOptions();
-    watchCustomExercises();
     watchWeightHistory();
     render();
   } else {
@@ -148,26 +167,95 @@ onAuthStateChanged(auth, async (user) => {
     if (entriesUnsub) entriesUnsub();
     if (dayDocUnsub) dayDocUnsub();
     if (historyUnsub) historyUnsub();
+    if (historyExerciseUnsub) historyExerciseUnsub();
     if (customOptionsUnsub) customOptionsUnsub();
     if (exerciseSessionsUnsub) exerciseSessionsUnsub();
     if (weightDayUnsub) weightDayUnsub();
-    if (customExercisesUnsub) customExercisesUnsub();
+    if (routinesUnsub) routinesUnsub();
     if (weightHistoryUnsub) weightHistoryUnsub();
     customOptions = [];
-    customExercises = [];
+    userRoutines = [];
     weightHistory = [];
     currentExerciseSessions = [];
+    routineEditorOpen = false;
+    routineEditorBackdrop.hidden = true;
   }
 });
 
-// ---------- ejercicios propios (Firestore: users/{uid}/customExercises) ----------
-function watchCustomExercises() {
-  if (customExercisesUnsub) customExercisesUnsub();
-  const ref = collection(db, "users", currentUser.uid, "customExercises");
-  customExercisesUnsub = onSnapshot(ref, (snap) => {
-    customExercises = snap.docs.map((d) => ({ id: d.id, ...d.data() }));
+// ---------- rutinas propias (Firestore: users/{uid}/routines) ----------
+// La primera vez que un usuario entra, migramos las 4 rutinas de
+// data/rutinas.js (más cualquier ejercicio que ya hubiera agregado con el
+// mecanismo viejo de customExercises) a su propia colección "routines", para
+// que de ahí en adelante todo sea 100% editable desde la app. Se corre una
+// sola vez: si ya tiene rutinas guardadas, no hace nada.
+async function ensureRoutinesSeeded() {
+  const ref = collection(db, "users", currentUser.uid, "routines");
+  const existing = await getDocs(ref);
+  if (!existing.empty) return;
+
+  const customSnap = await getDocs(collection(db, "users", currentUser.uid, "customExercises"));
+  const customByRoutine = {};
+  customSnap.docs.forEach((d) => {
+    const data = d.data();
+    (customByRoutine[data.routineId] ||= []).push({ id: d.id, label: data.label, detalle: data.detalle || "" });
+  });
+
+  const batch = writeBatch(db);
+  SEED_RUTINAS.forEach((r, idx) => {
+    const grupos = [
+      { id: genId("g"), nombre: "Calentamiento", ejercicios: [{ ...CALENTAMIENTO }] },
+      ...r.grupos.map((g) => ({ id: genId("g"), nombre: g.nombre, ejercicios: g.ejercicios.map((e) => ({ ...e })) })),
+    ];
+    if (customByRoutine[r.id]?.length) {
+      grupos.push({ id: genId("g"), nombre: "Agregados por vos", esAgregados: true, ejercicios: customByRoutine[r.id] });
+    }
+    batch.set(doc(db, "users", currentUser.uid, "routines", r.id), {
+      nombre: r.nombre, nombreCorto: r.nombreCorto, orden: idx, grupos,
+      createdAt: serverTimestamp(), updatedAt: serverTimestamp(),
+    });
+  });
+  customSnap.docs.forEach((d) => batch.delete(d.ref));
+  await batch.commit();
+}
+
+function watchRoutines() {
+  if (routinesUnsub) routinesUnsub();
+  const ref = collection(db, "users", currentUser.uid, "routines");
+  routinesUnsub = onSnapshot(ref, (snap) => {
+    userRoutines = snap.docs
+      .map((d) => ({ id: d.id, ...d.data() }))
+      .sort((a, b) => (a.orden ?? 0) - (b.orden ?? 0));
+    renderSessionSheet();
     if (currentView === "ejercicio") renderEjercicio();
-  }, (err) => toast("Error leyendo tus ejercicios: " + err.message, true));
+    if (routineEditorOpen) renderRoutineEditor();
+  }, (err) => toast("Error leyendo tus rutinas: " + err.message, true));
+}
+
+function routinePorId(id) {
+  return userRoutines.find((r) => r.id === id) || null;
+}
+
+// Agrega un ejercicio nuevo a la rutina, siempre dentro de un grupo
+// "Agregados por vos" (se crea si no existe) — lo usa el formulario rápido
+// de la hoja de sesión, sin tener que abrir el editor completo de rutinas.
+async function addExerciseToRoutine(routineId, label, detalle) {
+  const rutina = routinePorId(routineId);
+  if (!rutina) return;
+  const grupos = rutina.grupos.map((g) => ({ ...g, ejercicios: [...g.ejercicios] }));
+  let destino = grupos.find((g) => g.esAgregados);
+  if (!destino) {
+    destino = { id: genId("g"), nombre: "Agregados por vos", esAgregados: true, ejercicios: [] };
+    grupos.push(destino);
+  }
+  destino.ejercicios.push({ id: genId("ex"), label, detalle });
+  await updateDoc(doc(db, "users", currentUser.uid, "routines", routineId), { grupos, updatedAt: serverTimestamp() });
+}
+
+async function deleteExerciseFromRoutine(routineId, exId) {
+  const rutina = routinePorId(routineId);
+  if (!rutina) return;
+  const grupos = rutina.grupos.map((g) => ({ ...g, ejercicios: g.ejercicios.filter((e) => e.id !== exId) }));
+  await updateDoc(doc(db, "users", currentUser.uid, "routines", routineId), { grupos, updatedAt: serverTimestamp() });
 }
 
 // ---------- historial de peso (últimos registros, para el mini-gráfico) ----------
@@ -499,8 +587,10 @@ const ejDeleteSessionBtn = $("#ej-delete-session-btn");
 const ejSessionsListEl = $("#ej-sessions-list");
 
 function nombreSesion(routineId) {
-  if (routineId === BICI_ID) return "🚲 Bici / Cardio";
-  return rutinaPorId(routineId)?.nombre || routineId;
+  const cardio = cardioPorId(routineId);
+  if (cardio) return `${cardio.icon} ${cardio.nombre}`;
+  const r = routinePorId(routineId);
+  return r ? r.nombre : "Rutina borrada";
 }
 
 // Estimación simple por MET: kcal ≈ MET × peso_kg × horas. Usa el último
@@ -509,8 +599,19 @@ function nombreSesion(routineId) {
 function estimateCalories(routineId, minutes) {
   const pesoKg = weightHistory[0]?.weightKg;
   if (!pesoKg || !minutes) return null;
-  const met = routineId === BICI_ID ? MET_BICI : MET_GYM;
+  const cardio = cardioPorId(routineId);
+  const met = cardio ? cardio.met : MET_GYM;
   return Math.round(met * pesoKg * (minutes / 60));
+}
+
+// Pinta los botones de "Qué hiciste" — actividades cardio fijas + rutinas de
+// gimnasio (dinámicas, las que tenga cargadas el usuario en Firestore).
+function renderRoutineSeg() {
+  const current = sessionDraft?.routineId;
+  let html = ACTIVIDADES_CARDIO.map((a) => `<button type="button" data-routine="${a.id}">${a.icon} ${escapeHTML(a.nombreCorto)}</button>`).join("");
+  html += userRoutines.map((r) => `<button type="button" data-routine="${r.id}">${escapeHTML(r.nombreCorto || r.nombre)}</button>`).join("");
+  ejRoutineSeg.innerHTML = html || `<span class="hint">Todavía no tenés rutinas — creá una desde "✏️ Rutinas".</span>`;
+  ejRoutineSeg.querySelectorAll("button").forEach((b) => b.classList.toggle("active", b.dataset.routine === current));
 }
 
 function checkItemHTML(id, label, isChecked, custom = false) {
@@ -553,9 +654,9 @@ exSheetBackdrop.addEventListener("click", (e) => { if (e.target === exSheetBackd
 function renderSessionSheet() {
   if (!sessionDraft) return;
   const { routineId } = sessionDraft;
-  const esBici = routineId === BICI_ID;
+  const cardio = cardioPorId(routineId);
 
-  ejRoutineSeg.querySelectorAll("button").forEach((b) => b.classList.toggle("active", b.dataset.routine === routineId));
+  renderRoutineSeg();
 
   ejSessionDoneBtn.disabled = !routineId;
   ejSessionDoneBtn.textContent = sessionDraft.done ? "↩️ Desmarcar sesión" : "✅ Marcar sesión completa";
@@ -565,31 +666,25 @@ function renderSessionSheet() {
     ejAddExerciseWrap.hidden = true;
     return;
   }
-  if (esBici) {
+  if (cardio) {
     ejExerciseListEl.innerHTML = "";
     ejAddExerciseWrap.hidden = true;
     return;
   }
 
-  const rutina = rutinaPorId(routineId);
-  if (!rutina) { ejExerciseListEl.innerHTML = ""; ejAddExerciseWrap.hidden = true; return; }
+  const rutina = routinePorId(routineId);
+  if (!rutina) { ejExerciseListEl.innerHTML = `<div class="empty-state">Esta rutina ya no existe.</div>`; ejAddExerciseWrap.hidden = true; return; }
   const checked = sessionDraft.checked || {};
-  const propios = customExercises.filter((e) => e.routineId === routineId);
 
-  let html = checkItemHTML(CALENTAMIENTO.id, `${CALENTAMIENTO.label} · ${CALENTAMIENTO.detalle}`, checked[CALENTAMIENTO.id]);
+  let html = "";
   rutina.grupos.forEach((g) => {
+    if (!g.ejercicios.length) return;
     html += `<div class="ej-group-label">${escapeHTML(g.nombre)}</div>`;
     g.ejercicios.forEach((ex) => {
-      html += checkItemHTML(ex.id, `${ex.label} · ${ex.detalle}`, checked[ex.id]);
+      html += checkItemHTML(ex.id, `${ex.label}${ex.detalle ? " · " + ex.detalle : ""}`, checked[ex.id], !!g.esAgregados);
     });
   });
-  if (propios.length) {
-    html += `<div class="ej-group-label">Agregados por vos</div>`;
-    propios.forEach((ex) => {
-      html += checkItemHTML(ex.id, `${ex.label}${ex.detalle ? " · " + ex.detalle : ""}`, checked[ex.id], true);
-    });
-  }
-  ejExerciseListEl.innerHTML = html;
+  ejExerciseListEl.innerHTML = html || `<div class="empty-state" style="padding:16px;">Esta rutina todavía no tiene ejercicios. Agregalos desde "✏️ Rutinas".</div>`;
   ejAddExerciseWrap.hidden = false;
 
   ejExerciseListEl.querySelectorAll("[data-ex-toggle]").forEach((el) => {
@@ -604,7 +699,7 @@ function renderSessionSheet() {
     btn.addEventListener("click", async (e) => {
       e.stopPropagation();
       if (!confirm("¿Borrar este ejercicio de la rutina?")) return;
-      await deleteDoc(doc(db, "users", currentUser.uid, "customExercises", btn.dataset.exDel));
+      await deleteExerciseFromRoutine(routineId, btn.dataset.exDel);
     });
   });
 }
@@ -664,11 +759,10 @@ $("#ej-save-exercise-btn").addEventListener("click", async () => {
   const label = ejNewExerciseLabel.value.trim();
   const detalle = ejNewExerciseDetalle.value.trim();
   const routineId = sessionDraft?.routineId;
-  if (!routineId || routineId === BICI_ID) return;
+  if (!routineId || cardioPorId(routineId)) return;
   if (!label) { toast("Escribí el nombre del ejercicio", true); return; }
   try {
-    const newRef = doc(collection(db, "users", currentUser.uid, "customExercises"));
-    await setDoc(newRef, { routineId, label, detalle, createdAt: serverTimestamp() });
+    await addExerciseToRoutine(routineId, label, detalle);
     ejNewExerciseLabel.value = "";
     ejNewExerciseDetalle.value = "";
     ejAddExerciseForm.hidden = true;
@@ -716,11 +810,12 @@ ejDeleteSessionBtn.addEventListener("click", async () => {
 });
 
 function sessionCardHTML(s) {
-  const icon = s.routineId === BICI_ID ? "🚲" : "💪";
+  const cardio = cardioPorId(s.routineId);
+  const icon = cardio ? cardio.icon : "💪";
   const metaParts = [];
   if (s.minutes) metaParts.push(`${s.minutes} min`);
   if (s.caloriesBurned != null) metaParts.push(`${s.caloriesBurned} kcal gastadas`);
-  if (s.routineId !== BICI_ID) {
+  if (!cardio) {
     const totalEj = exerciseListLength(s.routineId);
     const marcados = Object.values(s.checked || {}).filter(Boolean).length;
     if (totalEj) metaParts.push(`${marcados}/${totalEj} ejercicios`);
@@ -742,11 +837,9 @@ function sessionCardHTML(s) {
 }
 
 function exerciseListLength(routineId) {
-  const rutina = rutinaPorId(routineId);
+  const rutina = routinePorId(routineId);
   if (!rutina) return 0;
-  const propios = customExercises.filter((e) => e.routineId === routineId).length;
-  const fijos = rutina.grupos.reduce((s, g) => s + g.ejercicios.length, 0) + 1; // +1 por el calentamiento
-  return fijos + propios;
+  return rutina.grupos.reduce((s, g) => s + g.ejercicios.length, 0);
 }
 
 function renderEjercicio() {
@@ -788,6 +881,178 @@ function renderBalance() {
     <div class="ej-balance-row"><span>Comida</span><b class="num">${consumidas} kcal</b></div>
     <div class="ej-balance-row"><span>Ejercicio</span><b class="num">−${gastadas} kcal</b></div>
   `;
+}
+
+// ---------- editor de rutinas (crear, renombrar, agregar/borrar segmentos y ejercicios) ----------
+function openRoutineEditor() {
+  routineEditorOpen = true;
+  routineEditorView = "list";
+  routineEditorTargetId = null;
+  renderRoutineEditor();
+  routineEditorBackdrop.hidden = false;
+}
+function closeRoutineEditor() {
+  routineEditorOpen = false;
+  routineEditorBackdrop.hidden = true;
+}
+function openRoutineDetail(id) {
+  routineEditorTargetId = id;
+  routineEditorView = "detail";
+  renderRoutineEditor();
+}
+$("#ej-edit-routines-btn").addEventListener("click", openRoutineEditor);
+$("#routine-editor-close").addEventListener("click", closeRoutineEditor);
+routineEditorBackdrop.addEventListener("click", (e) => { if (e.target === routineEditorBackdrop) closeRoutineEditor(); });
+
+function renderRoutineEditor() {
+  const bodyEl = $("#routine-editor-body");
+  if (routineEditorView === "list") {
+    $("#routine-editor-title").textContent = "Mis rutinas";
+    let html = userRoutines.map((r) => `
+      <div class="routine-row" data-routine-open="${r.id}">
+        <span class="routine-row-name">${escapeHTML(r.nombre)}</span>
+        <div class="routine-row-actions">
+          <button type="button" data-routine-edit="${r.id}" title="Editar">✏️</button>
+          <button type="button" data-routine-del="${r.id}" title="Borrar">🗑️</button>
+        </div>
+      </div>
+    `).join("");
+    if (!userRoutines.length) html = `<div class="empty-state">Todavía no tenés rutinas de gimnasio.<br>Creá la primera.</div>`;
+    html += `<button type="button" class="photo-btn" id="routine-new-btn">+ Nueva rutina</button>`;
+    bodyEl.innerHTML = html;
+
+    bodyEl.querySelectorAll("[data-routine-open], [data-routine-edit]").forEach((el) => {
+      el.addEventListener("click", (e) => {
+        e.stopPropagation();
+        openRoutineDetail(el.dataset.routineOpen || el.dataset.routineEdit);
+      });
+    });
+    bodyEl.querySelectorAll("[data-routine-del]").forEach((btn) => {
+      btn.addEventListener("click", async (e) => {
+        e.stopPropagation();
+        const r = routinePorId(btn.dataset.routineDel);
+        if (!confirm(`¿Borrar "${r?.nombre}"? Las sesiones ya guardadas con esta rutina no se borran, pero van a quedar sin nombre.`)) return;
+        await deleteDoc(doc(db, "users", currentUser.uid, "routines", btn.dataset.routineDel));
+        toast("Rutina borrada");
+      });
+    });
+    $("#routine-new-btn").addEventListener("click", async () => {
+      const nombre = prompt("Nombre de la nueva rutina (ej: Rutina 5: Core)");
+      if (!nombre || !nombre.trim()) return;
+      const nombreCorto = prompt("Nombre corto para el botón de selección (ej: Core)", nombre.trim().slice(0, 18)) || nombre.trim();
+      try {
+        const newRef = doc(collection(db, "users", currentUser.uid, "routines"));
+        await setDoc(newRef, {
+          nombre: nombre.trim(), nombreCorto: nombreCorto.trim(), orden: userRoutines.length, grupos: [],
+          createdAt: serverTimestamp(), updatedAt: serverTimestamp(),
+        });
+        toast("Rutina creada — agregale segmentos y ejercicios");
+        openRoutineDetail(newRef.id);
+      } catch (err) {
+        toast("No se pudo crear: " + err.message, true);
+      }
+    });
+    return;
+  }
+
+  // ---- detalle de una rutina: segmentos y ejercicios ----
+  const r = routinePorId(routineEditorTargetId);
+  if (!r) { routineEditorView = "list"; renderRoutineEditor(); return; }
+  $("#routine-editor-title").textContent = r.nombre;
+
+  let html = `<button type="button" class="ghost-btn" id="routine-back-btn" style="align-self:flex-start;padding:4px 0;">‹ Volver a mis rutinas</button>`;
+  html += `<button type="button" class="photo-btn" id="routine-rename-btn">✏️ Cambiar nombre</button>`;
+  html += r.grupos.map((g) => `
+    <div class="routine-group-block">
+      <div class="routine-group-head">
+        <b>${escapeHTML(g.nombre)}</b>
+        <div class="routine-row-actions">
+          <button type="button" data-group-rename="${g.id}" title="Renombrar segmento">✏️</button>
+          <button type="button" data-group-del="${g.id}" title="Borrar segmento">🗑️</button>
+        </div>
+      </div>
+      ${g.ejercicios.map((ex) => `
+        <div class="routine-ex-row">
+          <span>${escapeHTML(ex.label)}${ex.detalle ? ` · ${escapeHTML(ex.detalle)}` : ""}</span>
+          <div class="routine-row-actions">
+            <button type="button" data-ex-rename="${g.id}:${ex.id}" title="Editar">✏️</button>
+            <button type="button" data-ex-del2="${g.id}:${ex.id}" title="Borrar">✕</button>
+          </div>
+        </div>
+      `).join("") || `<p class="hint" style="margin:4px 0;">Sin ejercicios todavía.</p>`}
+      <button type="button" class="ghost-btn" data-ex-add="${g.id}" style="align-self:flex-start;padding:6px 0;">+ Agregar ejercicio</button>
+    </div>
+  `).join("");
+  html += `<button type="button" class="photo-btn" id="routine-add-group-btn">+ Agregar segmento</button>`;
+  html += `<button type="button" class="ghost-btn" id="routine-delete-btn">Borrar esta rutina</button>`;
+  bodyEl.innerHTML = html;
+
+  $("#routine-back-btn").addEventListener("click", () => { routineEditorView = "list"; renderRoutineEditor(); });
+  $("#routine-rename-btn").addEventListener("click", async () => {
+    const nombre = prompt("Nuevo nombre de la rutina", r.nombre);
+    if (!nombre || !nombre.trim()) return;
+    const nombreCorto = prompt("Nombre corto para el botón de selección", r.nombreCorto || nombre.trim()) || nombre.trim();
+    await updateDoc(doc(db, "users", currentUser.uid, "routines", r.id), { nombre: nombre.trim(), nombreCorto: nombreCorto.trim(), updatedAt: serverTimestamp() });
+  });
+  $("#routine-delete-btn").addEventListener("click", async () => {
+    if (!confirm(`¿Borrar "${r.nombre}"? Las sesiones ya guardadas con esta rutina no se borran, pero van a quedar sin nombre.`)) return;
+    await deleteDoc(doc(db, "users", currentUser.uid, "routines", r.id));
+    routineEditorView = "list";
+    toast("Rutina borrada");
+  });
+  $("#routine-add-group-btn").addEventListener("click", async () => {
+    const nombre = prompt("Nombre del nuevo segmento (ej: Antebrazos)");
+    if (!nombre || !nombre.trim()) return;
+    const grupos = [...r.grupos, { id: genId("g"), nombre: nombre.trim(), ejercicios: [] }];
+    await updateDoc(doc(db, "users", currentUser.uid, "routines", r.id), { grupos, updatedAt: serverTimestamp() });
+  });
+  bodyEl.querySelectorAll("[data-group-rename]").forEach((btn) => {
+    btn.addEventListener("click", async () => {
+      const gid = btn.dataset.groupRename;
+      const g = r.grupos.find((x) => x.id === gid);
+      const nombre = prompt("Nuevo nombre del segmento", g?.nombre || "");
+      if (!nombre || !nombre.trim()) return;
+      const grupos = r.grupos.map((x) => (x.id === gid ? { ...x, nombre: nombre.trim() } : x));
+      await updateDoc(doc(db, "users", currentUser.uid, "routines", r.id), { grupos, updatedAt: serverTimestamp() });
+    });
+  });
+  bodyEl.querySelectorAll("[data-group-del]").forEach((btn) => {
+    btn.addEventListener("click", async () => {
+      if (!confirm("¿Borrar este segmento y todos sus ejercicios?")) return;
+      const grupos = r.grupos.filter((x) => x.id !== btn.dataset.groupDel);
+      await updateDoc(doc(db, "users", currentUser.uid, "routines", r.id), { grupos, updatedAt: serverTimestamp() });
+    });
+  });
+  bodyEl.querySelectorAll("[data-ex-add]").forEach((btn) => {
+    btn.addEventListener("click", async () => {
+      const gid = btn.dataset.exAdd;
+      const label = prompt("Nombre del ejercicio (ej: Peck Deck)");
+      if (!label || !label.trim()) return;
+      const detalle = prompt("Series x repeticiones (opcional, ej: 3 x 12)", "") || "";
+      const grupos = r.grupos.map((x) => (x.id === gid ? { ...x, ejercicios: [...x.ejercicios, { id: genId("ex"), label: label.trim(), detalle: detalle.trim() }] } : x));
+      await updateDoc(doc(db, "users", currentUser.uid, "routines", r.id), { grupos, updatedAt: serverTimestamp() });
+    });
+  });
+  bodyEl.querySelectorAll("[data-ex-rename]").forEach((btn) => {
+    btn.addEventListener("click", async () => {
+      const [gid, exId] = btn.dataset.exRename.split(":");
+      const g = r.grupos.find((x) => x.id === gid);
+      const ex = g?.ejercicios.find((e) => e.id === exId);
+      const label = prompt("Nombre del ejercicio", ex?.label || "");
+      if (!label || !label.trim()) return;
+      const detalle = prompt("Series x repeticiones", ex?.detalle || "") ?? (ex?.detalle || "");
+      const grupos = r.grupos.map((x) => (x.id === gid ? { ...x, ejercicios: x.ejercicios.map((e) => (e.id === exId ? { ...e, label: label.trim(), detalle: detalle.trim() } : e)) } : x));
+      await updateDoc(doc(db, "users", currentUser.uid, "routines", r.id), { grupos, updatedAt: serverTimestamp() });
+    });
+  });
+  bodyEl.querySelectorAll("[data-ex-del2]").forEach((btn) => {
+    btn.addEventListener("click", async () => {
+      const [gid, exId] = btn.dataset.exDel2.split(":");
+      if (!confirm("¿Borrar este ejercicio?")) return;
+      const grupos = r.grupos.map((x) => (x.id === gid ? { ...x, ejercicios: x.ejercicios.filter((e) => e.id !== exId) } : x));
+      await updateDoc(doc(db, "users", currentUser.uid, "routines", r.id), { grupos, updatedAt: serverTimestamp() });
+    });
+  });
 }
 
 // ---------- peso corporal ----------
@@ -836,10 +1101,11 @@ historyRangeSeg.addEventListener("click", (e) => {
 });
 
 function renderHistorial() {
-  const entriesRef = collection(db, "users", currentUser.uid, "entries");
   // "Todo" (0) usa una fecha muy vieja como piso en vez de sacar el where,
   // así seguimos ordenando por el mismo campo sin necesitar índice compuesto.
   const start = historyRangeDays > 0 ? isoAddDays(todayISO(), -(historyRangeDays - 1)) : "2000-01-01";
+
+  const entriesRef = collection(db, "users", currentUser.uid, "entries");
   const qHist = query(entriesRef, where("date", ">=", start), orderBy("date", "desc"));
   if (historyUnsub) historyUnsub();
   historyUnsub = onSnapshot(qHist, (snap) => {
@@ -849,48 +1115,96 @@ function renderHistorial() {
       byDate[data.date] = byDate[data.date] || [];
       byDate[data.date].push(data);
     });
-    const dates = Object.keys(byDate).sort((a, b) => (a < b ? 1 : -1));
-    lastHistoryDates = dates;
+    lastHistoryDates = Object.keys(byDate).sort((a, b) => (a < b ? 1 : -1));
     lastHistoryByDate = byDate;
-    $("#export-row").hidden = dates.length === 0;
-    if (dates.length === 0) {
-      historySummaryEl.innerHTML = "";
-      historyListEl.innerHTML = `<div class="empty-state">Todavía no hay historial en este rango. Empezá a cargar comidas en "Hoy".</div>`;
-      return;
-    }
+    renderHistorialCombined();
+  }, (err) => toast("Error leyendo historial: " + err.message, true));
 
-    const totals = dates.map((d) => byDate[d].reduce((s, e) => s + (Number(e.kcal) || 0), 0));
-    const avg = Math.round(totals.reduce((a, b) => a + b, 0) / totals.length);
-    const enRango = totals.filter((t) => statusFor(t).cls === "ok").length;
-    historySummaryEl.innerHTML = `
-      <div class="summary-card" style="padding:14px 16px;">
-        <div class="summary-top" style="align-items:center;">
-          <div><div class="summary-kcal num" style="font-size:1.4rem;">${avg}<small>kcal/día prom.</small></div></div>
-          <div class="status-pill ${enRango === dates.length ? "ok" : enRango === 0 ? "bad" : "warn"}">${enRango}/${dates.length} días en rango</div>
-        </div>
-      </div>`;
+  // Mismo rango, pero de las sesiones de ejercicio — solo para sumar la
+  // referencia de calorías gastadas al lado de las de comida. No cambia qué
+  // días aparecen en la lista (eso lo sigue decidiendo "entries" arriba).
+  const sessionsRef = collection(db, "users", currentUser.uid, "exerciseSessions");
+  const qHistEx = query(sessionsRef, where("date", ">=", start));
+  if (historyExerciseUnsub) historyExerciseUnsub();
+  historyExerciseUnsub = onSnapshot(qHistEx, (snap) => {
+    const byDate = {};
+    snap.docs.forEach((d) => {
+      const data = d.data();
+      byDate[data.date] = (byDate[data.date] || 0) + (Number(data.caloriesBurned) || 0);
+    });
+    lastHistoryExerciseByDate = byDate;
+    renderHistorialCombined();
+  }, (err) => toast("Error leyendo el ejercicio del historial: " + err.message, true));
+}
 
-    historyListEl.innerHTML = dates.map((d) => {
-      const total = byDate[d].reduce((s, e) => s + (Number(e.kcal) || 0), 0);
-      const st = statusFor(total);
-      return `
-        <div class="history-item" data-date="${d}">
+// Combina el último snapshot de comida con el de ejercicio. El semáforo y el
+// promedio de kcal/día de comida quedan exactamente como estaban siempre —
+// esto solo agrega, al lado, una referencia de balance (comida − ejercicio),
+// por día y promediada en el rango.
+function renderHistorialCombined() {
+  const dates = lastHistoryDates;
+  const byDate = lastHistoryByDate;
+  $("#export-row").hidden = dates.length === 0;
+  if (dates.length === 0) {
+    historySummaryEl.innerHTML = "";
+    historyListEl.innerHTML = `<div class="empty-state">Todavía no hay historial en este rango. Empezá a cargar comidas en "Hoy".</div>`;
+    return;
+  }
+
+  const totals = dates.map((d) => byDate[d].reduce((s, e) => s + (Number(e.kcal) || 0), 0));
+  const avg = Math.round(totals.reduce((a, b) => a + b, 0) / totals.length);
+  const enRango = totals.filter((t) => statusFor(t).cls === "ok").length;
+
+  const balances = dates.map((d, i) => totals[i] - (lastHistoryExerciseByDate[d] || 0));
+  const avgBalance = Math.round(balances.reduce((a, b) => a + b, 0) / balances.length);
+  const diasConEjercicio = dates.filter((d) => lastHistoryExerciseByDate[d]).length;
+
+  historySummaryEl.innerHTML = `
+    <div class="summary-card" style="padding:14px 16px;">
+      <div class="summary-top" style="align-items:center;">
+        <div><div class="summary-kcal num" style="font-size:1.4rem;">${avg}<small>kcal/día prom.</small></div></div>
+        <div class="status-pill ${enRango === dates.length ? "ok" : enRango === 0 ? "bad" : "warn"}">${enRango}/${dates.length} días en rango</div>
+      </div>
+    </div>
+    <div class="summary-card" style="padding:14px 16px;margin-top:10px;">
+      <div class="summary-top" style="align-items:center;">
+        <div><div class="summary-kcal num" style="font-size:1.4rem;">${avgBalance >= 0 ? "+" : ""}${avgBalance}<small>balance prom./día</small></div></div>
+        <div class="status-pill ${diasConEjercicio ? "ok" : "empty"}">${diasConEjercicio}/${dates.length} días con ejercicio</div>
+      </div>
+      <p class="hint" style="margin:0;">Comida menos lo estimado en ejercicio, promediado en este rango — informativo, no reemplaza el semáforo de comida de arriba.</p>
+    </div>`;
+
+  historyListEl.innerHTML = dates.map((d, i) => {
+    const total = totals[i];
+    const st = statusFor(total);
+    const gastadas = lastHistoryExerciseByDate[d] || 0;
+    const balance = total - gastadas;
+    return `
+      <div class="history-item" data-date="${d}">
+        <div class="history-item-top">
           <div class="hd"><b>${formatLongDate(d)}</b><span>${byDate[d].length} comidas</span></div>
           <div style="display:flex;align-items:center;gap:10px;">
             <span class="hkcal num">${total} kcal</span>
             <span class="status-pill ${st.cls}">${st.label}</span>
           </div>
         </div>
-      `;
-    }).join("");
-    historyListEl.querySelectorAll("[data-date]").forEach((el) => {
-      el.addEventListener("click", () => {
-        watchDate(el.dataset.date);
-        currentView = "hoy";
-        render();
-      });
+        ${gastadas ? `
+          <div class="history-balance-row">
+            <span>🔥 Comida: ${total} kcal</span>
+            <span>💪 Ejercicio: −${gastadas} kcal</span>
+            <span>Balance: <b class="num">${balance >= 0 ? "+" : ""}${balance}</b></span>
+          </div>
+        ` : ""}
+      </div>
+    `;
+  }).join("");
+  historyListEl.querySelectorAll("[data-date]").forEach((el) => {
+    el.addEventListener("click", () => {
+      watchDate(el.dataset.date);
+      currentView = "hoy";
+      render();
     });
-  }, (err) => toast("Error leyendo historial: " + err.message, true));
+  });
 }
 
 // ---------- completar retroactivamente grasas/proteínas con IA ----------
@@ -977,6 +1291,81 @@ backfillBtn.addEventListener("click", async () => {
   } finally {
     backfillRunning = false;
     backfillBtn.textContent = BACKFILL_LABEL;
+  }
+});
+
+// ---------- completar retroactivamente calorías de ejercicio (sin IA — es la misma fórmula de siempre) ----------
+const backfillExBtn = $("#backfill-ex-btn");
+const backfillExStatusEl = $("#backfill-ex-status");
+const BACKFILL_EX_LABEL = "⚡ Completar calorías de ejercicio faltantes";
+let backfillExRunning = false;
+
+// Entre los pesos registrados, elige el más cercano a una fecha dada:
+// preferimos el último peso cargado ANTES o EN esa fecha; si no hay ninguno
+// (la sesión es más vieja que el primer peso que cargaste), usamos el
+// primero posterior en su lugar.
+function pesoMasCercano(pesosAsc, iso) {
+  let candidato = null;
+  for (const w of pesosAsc) {
+    if (w.date <= iso) candidato = w;
+    else {
+      if (!candidato) candidato = w;
+      break;
+    }
+  }
+  return candidato ? candidato.weightKg : null;
+}
+
+backfillExBtn.addEventListener("click", async () => {
+  if (backfillExRunning) return;
+  if (!confirm("Esto revisa TODAS tus sesiones de ejercicio (no solo este rango) y completa las calorías gastadas que falten, usando tu peso más cercano a esa fecha y la fórmula de siempre. No toca las sesiones que ya tengan un valor cargado. ¿Arrancamos?")) return;
+
+  backfillExRunning = true;
+  backfillExBtn.disabled = true;
+  backfillExBtn.textContent = "Calculando...";
+  backfillExStatusEl.hidden = false;
+  backfillExStatusEl.textContent = "Buscando sesiones sin calorías cargadas...";
+
+  try {
+    const sessionsRef = collection(db, "users", currentUser.uid, "exerciseSessions");
+    const weightsRef = collection(db, "users", currentUser.uid, "weights");
+    const [sessionsSnap, weightsSnap] = await Promise.all([getDocs(sessionsRef), getDocs(weightsRef)]);
+    const sesiones = sessionsSnap.docs.map((d) => ({ id: d.id, ...d.data() }));
+    const pesos = weightsSnap.docs
+      .map((d) => d.data())
+      .filter((w) => w.date && w.weightKg)
+      .sort((a, b) => (a.date < b.date ? -1 : 1));
+
+    const faltantes = sesiones.filter((s) => s.caloriesBurned == null && s.minutes);
+    if (!faltantes.length) {
+      backfillExStatusEl.textContent = "No encontré sesiones con calorías faltantes — ya está todo completo.";
+      return;
+    }
+
+    let ok = 0, sinDato = 0;
+    let batch = writeBatch(db);
+    let enBatch = 0;
+    for (const s of faltantes) {
+      const pesoKg = pesoMasCercano(pesos, s.date);
+      if (!pesoKg) { sinDato++; continue; }
+      const met = cardioPorId(s.routineId)?.met ?? MET_GYM;
+      const kcal = Math.round(met * pesoKg * (s.minutes / 60));
+      batch.update(doc(db, "users", currentUser.uid, "exerciseSessions", s.id), { caloriesBurned: kcal });
+      ok++;
+      enBatch++;
+      if (enBatch >= 400) { await batch.commit(); batch = writeBatch(db); enBatch = 0; }
+    }
+    if (enBatch > 0) await batch.commit();
+
+    backfillExStatusEl.textContent = `Listo — ${ok} sesiones completadas${sinDato ? `, ${sinDato} sin ningún peso registrado todavía (cargá al menos un peso y volvé a tocar el botón)` : ""}.`;
+    toast(`Ejercicio completado: ${ok} sesiones actualizadas`);
+  } catch (err) {
+    backfillExStatusEl.textContent = "";
+    toast("No se pudo completar: " + err.message, true);
+  } finally {
+    backfillExRunning = false;
+    backfillExBtn.disabled = false;
+    backfillExBtn.textContent = BACKFILL_EX_LABEL;
   }
 });
 

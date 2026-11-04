@@ -78,7 +78,10 @@
 
           <div class="ej-sessions-head">
             <h2 style="font-size:1.05rem;margin:0;">Sesiones de hoy</h2>
-            <button type="button" class="photo-btn" id="ej-add-session-btn">+ Agregar sesión</button>
+            <div style="display:flex;gap:6px;">
+              <button type="button" class="link-btn" id="ej-edit-routines-btn">✏️ Rutinas</button>
+              <button type="button" class="photo-btn" id="ej-add-session-btn">+ Agregar sesión</button>
+            </div>
           </div>
           <div id="ej-sessions-list"></div>
 
@@ -112,6 +115,11 @@
             <button type="button" class="ai-btn" id="backfill-btn">🧠 Completar grasas y proteínas faltantes con IA</button>
             <p class="ai-note">Repasa todo tu historial (no solo este rango) y le pide a la IA que estime grasas y/o proteínas únicamente en las comidas viejas que no las tengan cargadas, a partir de la descripción y la foto si la guardaste. No toca las kcal ni ningún dato que ya tengas.</p>
             <div class="backfill-status" id="backfill-status" hidden></div>
+          </div>
+          <div class="backfill-card">
+            <button type="button" class="ai-btn" id="backfill-ex-btn" style="background:var(--ok-soft);color:var(--ok);">⚡ Completar calorías de ejercicio faltantes</button>
+            <p class="ai-note">Repasa TODAS tus sesiones de ejercicio (no solo este rango) y completa las calorías gastadas que falten, con la misma fórmula de peso × minutos que ya usa la app al cargar una sesión. No usa IA ni hace falta API key — es instantáneo. No toca las sesiones que ya tengan un valor cargado.</p>
+            <div class="backfill-status" id="backfill-ex-status" hidden></div>
           </div>
           <div id="history-list" style="display:flex;flex-direction:column;gap:10px;"></div>
         </section>
@@ -240,13 +248,7 @@
       <div style="display:flex;flex-direction:column;gap:14px;">
         <div class="field">
           <label>Qué hiciste</label>
-          <div class="seg" id="ej-routine-seg">
-            <button type="button" data-routine="bici">🚲 Bici</button>
-            <button type="button" data-routine="rutina1">Pecho / Tríceps</button>
-            <button type="button" data-routine="rutina2">Espalda / Bíceps</button>
-            <button type="button" data-routine="rutina3">Piernas</button>
-            <button type="button" data-routine="rutina4">Hombros</button>
-          </div>
+          <div class="seg" id="ej-routine-seg"></div>
         </div>
 
         <div id="ej-exercise-list"></div>
@@ -274,6 +276,18 @@
         <button type="button" class="primary-btn" id="ej-save-session-btn">Guardar sesión</button>
         <button type="button" class="ghost-btn" id="ej-delete-session-btn" hidden>Borrar esta sesión</button>
       </div>
+    </div>
+  </div>
+
+  <!-- ---------- sheet: editor de rutinas (crear/renombrar/borrar segmentos y ejercicios) ---------- -->
+  <div class="sheet-backdrop" id="routine-editor-backdrop" hidden>
+    <div class="sheet" role="dialog" aria-modal="true">
+      <div class="sheet-handle"></div>
+      <div class="sheet-head">
+        <h2 id="routine-editor-title">Mis rutinas</h2>
+        <button class="icon-btn" id="routine-editor-close" aria-label="Cerrar">✕</button>
+      </div>
+      <div id="routine-editor-body" style="display:flex;flex-direction:column;gap:12px;"></div>
     </div>
   </div>
 
