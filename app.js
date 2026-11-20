@@ -1673,7 +1673,14 @@ $("#ai-analyze-btn").addEventListener("click", async () => {
     if (result.kcal_estimadas) $("#entry-kcal").value = Math.round(result.kcal_estimadas);
     if (result.grasas_estimadas_g != null) $("#entry-fat").value = Math.round(result.grasas_estimadas_g);
     if (result.proteinas_estimadas_g != null) $("#entry-protein").value = Math.round(result.proteinas_estimadas_g);
-    toast(`IA: ~${Math.round(result.kcal_estimadas)} kcal, ~${Math.round(result.grasas_estimadas_g ?? 0)} g grasas, ~${Math.round(result.proteinas_estimadas_g ?? 0)} g proteínas (confianza ${result.confianza || "media"}). Revisá y ajustá si hace falta.`);
+    if (result.tiene_verduras != null) $("#chk-veggies").checked = !!result.tiene_verduras;
+    if (result.tiene_proteina != null) $("#chk-protein").checked = !!result.tiene_proteina;
+    if (result.tiene_carbohidrato_complejo != null) $("#chk-carb").checked = !!result.tiene_carbohidrato_complejo;
+    const tags = [];
+    if (result.tiene_verduras) tags.push("verduras");
+    if (result.tiene_proteina) tags.push("proteína");
+    if (result.tiene_carbohidrato_complejo) tags.push("carbohidrato");
+    toast(`IA: ~${Math.round(result.kcal_estimadas)} kcal, ~${Math.round(result.grasas_estimadas_g ?? 0)} g grasas, ~${Math.round(result.proteinas_estimadas_g ?? 0)} g proteínas${tags.length ? ", detectó: " + tags.join(", ") : ""} (confianza ${result.confianza || "media"}). Revisá y ajustá si hace falta.`);
     $("#entry-desc").dataset.aiSource = "1";
   } catch (e) {
     toast("Error de la IA: " + e.message, true);
@@ -1709,8 +1716,12 @@ function buildAnalysisPrompt(descripcion, pesoAprox, photoCount) {
   const consigna = photoCount > 0 ? "Identificá los alimentos visibles en la(s) foto(s)" : "Identificá los alimentos mencionados en la descripción";
   return `Sos un asistente nutricional para alguien que vive en Argentina. ${intro} ${ctx}
 ${consigna}, estimá el peso total en gramos, las calorías totales aproximadas (kcal), los gramos totales de grasa aproximados y los gramos totales de proteína aproximados, usando valores nutricionales estándar y, cuando corresponda, equivalencias de productos y porciones típicas argentinas (fetas de fiambre, galletas de arroz, milanesas, etc.).
+Además, determiná estos tres datos como true o false:
+- tiene_verduras: si el plato incluye alguna verdura/vegetal (lechuga, tomate, zanahoria, zapallitos, brócoli, etc. — NO cuentan papa, batata ni choclo, que son carbohidratos).
+- tiene_proteina: si incluye una porción clara de proteína (carne, pollo, pescado, huevo, legumbres, tofu, fiambre, queso en cantidad, etc.).
+- tiene_carbohidrato_complejo: si incluye un carbohidrato complejo (arroz, papa, batata, pan, pasta, legumbres, avena, quinoa, choclo, etc.).
 Respondé EXCLUSIVAMENTE con un JSON con este formato exacto, sin texto adicional, sin markdown, sin comentarios:
-{"alimentos": "descripción corta en español, ej: milanesa de pollo con puré y ensalada", "peso_aproximado_g": numero, "kcal_estimadas": numero, "grasas_estimadas_g": numero, "proteinas_estimadas_g": numero, "confianza": "alta" o "media" o "baja"}`;
+{"alimentos": "descripción corta en español, ej: milanesa de pollo con puré y ensalada", "peso_aproximado_g": numero, "kcal_estimadas": numero, "grasas_estimadas_g": numero, "proteinas_estimadas_g": numero, "tiene_verduras": true o false, "tiene_proteina": true o false, "tiene_carbohidrato_complejo": true o false, "confianza": "alta" o "media" o "baja"}`;
 }
 
 function sleep(ms) {
